@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -44,6 +45,13 @@ var (
 	CRLF = []byte{'\r', '\n'}
 )
 
+// Error types for parsing commands
+var (
+	ErrEmptyCommand     = errors.New("ErrEmptyCommand Empty command")
+	ErrInsufficientArgs = errors.New("ErrInsufficientArgs The command issued has insufficient arguments")
+	ErrUnknownCommand   = errors.New("ErrUnknownCommand Unknown command string received")
+)
+
 // CommandSet is a slice of commands to be executed together.
 type CommandSet [][]string
 
@@ -58,8 +66,11 @@ type Transaction struct {
 
 // StartSession listening for commands.
 func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
-	var t Transaction
-	var wg sync.WaitGroup
+	var (
+		t      Transaction
+		wg     sync.WaitGroup
+		argLen int
+	)
 
 	bufferingTransaction := false
 	scanner := bufio.NewScanner(conn)
@@ -69,6 +80,11 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		return conn.Write(append([]byte(s), CRLF...))
 	}
 
+	fail := func(err error) {
+		bufferingTransaction = false
+		send(err.Error())
+	}
+
 	respond := func(results []string) {
 		for _, r := range results {
 			send(r)
@@ -76,21 +92,11 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		wg.Done()
 	}
 
-	expectMinArgs := func(argList []string, min int) bool {
-		if len(argList) < min {
-			bufferingTransaction = false
-			send(fmt.Sprintf("ErrArgLength The command issued requires at least %d arguments.", min))
-			return true
-		}
-
-		return false
-	}
-
 	for scanner.Scan() {
 		args := strings.Split(scanner.Text(), " ")
-		if len(args) == 0 || args[0] == "" {
-			bufferingTransaction = false
-			send("ErrNoArgs Empty command.")
+		argLen = len(args)
+		if argLen == 0 || (argLen == 1 && args[0] == "") {
+			fail(ErrEmptyCommand)
 			continue
 		}
 
@@ -109,15 +115,19 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 			bufferingTransaction = false
 
 		case DEL, GET:
-			if expectMinArgs(args, 2) {
+			if argLen < 2 {
+				fail(ErrInsufficientArgs)
 				continue
 			}
+
 			t.Commands = append(t.Commands, args[0:2])
 
 		case SET:
-			if expectMinArgs(args, 3) {
+			if argLen < 3 {
+				fail(ErrInsufficientArgs)
 				continue
 			}
+
 			t.Commands = append(
 				t.Commands,
 				[]string{
@@ -134,8 +144,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 			return
 
 		default:
-			bufferingTransaction = false
-			send("ErrBadCommand Unknown command string received.")
+			fail(ErrUnknownCommand)
 			continue
 		}
 
