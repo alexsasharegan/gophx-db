@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -58,6 +59,7 @@ type Transaction struct {
 // StartSession listening for commands.
 func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	var t Transaction
+	var wg sync.WaitGroup
 
 	bufferingTransaction := false
 	scanner := bufio.NewScanner(conn)
@@ -71,6 +73,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		for _, r := range results {
 			send(r)
 		}
+		wg.Done()
 	}
 
 	expectMinArgs := func(argList []string, min int) bool {
@@ -84,7 +87,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 
 	for scanner.Scan() {
 		args := strings.Split(scanner.Text(), " ")
-		if len(args) == 0 {
+		if len(args) == 0 || args[0] == "" {
 			send("ErrNoArgs Empty command.")
 			continue
 		}
@@ -113,10 +116,19 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 			if expectMinArgs(args, 3) {
 				continue
 			}
-			t.Commands = append(t.Commands, args[0:3])
+			t.Commands = append(
+				t.Commands,
+				[]string{
+					args[0],
+					args[1],
+					strings.Join(args[2:], " "),
+				},
+			)
 
 		case QUIT:
+			wg.Wait()
 			conn.Close()
+			log.Println("Closed connection")
 			return
 
 		default:
@@ -125,15 +137,17 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		}
 
 		if !bufferingTransaction {
+			wg.Add(1)
 			trans <- t
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Session scanner received an error: %v\n", err)
+		log.Printf("Session scanner received an error: %v\n", err)
 	}
 
 	conn.Close()
+	log.Println("Closed connection")
 }
 
 // Adapted from bufio/scan.go
@@ -183,6 +197,7 @@ func (s *KVStore) Del(k string) error {
 }
 
 func main() {
+	log.Println("Opening connection on localhost:8888...")
 	srv, err := net.Listen("tcp", ":8888")
 	if err != nil {
 		log.Fatalln(fmt.Sprintf("Failed to listen on port 8888: %v", err))
@@ -202,13 +217,11 @@ func main() {
 		for {
 			conn, err := srv.Accept()
 			if err != nil {
-				fmt.Fprintln(
-					os.Stderr,
-					fmt.Sprintf("Error accepting connection: %v", err),
-				)
+				log.Printf("Error accepting connection: %v\n", err)
 				continue
 			}
 
+			log.Println("New connection")
 			conns <- conn
 		}
 	}()
@@ -249,6 +262,8 @@ func main() {
 			}
 		}
 	}(ctx, trans)
+
+	log.Println("Server ready")
 
 	for {
 		select {
