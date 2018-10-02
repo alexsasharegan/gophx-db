@@ -39,7 +39,9 @@ Transactional Command Specifications:
 1. `COMMIT` - COMMIT indicates that the transaction is complete and to finalize
    the transaction by committing any changes to the global data store.
 
-Examples:
+## Examples
+
+### Regular interaction with the server
 
 ```text
 SET key1 value1\r\n
@@ -47,3 +49,27 @@ GET key1\r\n
 DEL key1\r\n
 QUIT\r\n
 ```
+
+In the example above, the expectation is that if "key1" doesn't exist, it is
+created and the "value1" is assigned to it. If it already exists, "key1" is
+updated with the new value.
+
+### Transactional interaction with the server
+
+```text
+BEGIN\r\n
+SET key1 value1\r\n
+GET key1\r\n
+DEL key1\r\n
+COMMIT\r\n
+QUIT\r\n
+```
+
+In the example above, the expectation is that a new transaction is started which
+will cause all of the queries below to operate on their own set of data. That
+means that the same expectations apply from the first example however those
+changes aren't seen outside of the scope of the transaction. If "key1" is set,
+then deleted, another transaction could be performing operations on "key1" at
+the same time however only the transaction that gets committed is seen.
+
+Feel free to post any questions about this here or on twitter: @golangphoenix
