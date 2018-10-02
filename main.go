@@ -12,7 +12,9 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 /*------------------------------------------------------------------------------
@@ -47,9 +49,10 @@ var (
 
 // Error types for parsing commands
 var (
-	ErrEmptyCommand     = errors.New("ErrEmptyCommand Empty command")
-	ErrInsufficientArgs = errors.New("ErrInsufficientArgs The command issued has insufficient arguments")
-	ErrUnknownCommand   = errors.New("ErrUnknownCommand Unknown command string received")
+	ErrEmpty   = errors.New("ErrEmpty Empty command")
+	ErrArgs    = errors.New("ErrArgs Command received with incorrect number of arguments")
+	ErrUnknown = errors.New("ErrUnknown Unknown command string received")
+	ErrConTerm = errors.New("ErrConTerm Server is terminating the connection")
 )
 
 // CommandSet is a slice of commands to be executed together.
@@ -72,6 +75,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		argLen int
 	)
 
+	closed := false
 	bufferingTransaction := false
 	scanner := bufio.NewScanner(conn)
 	scanner.Split(scanCRLF)
@@ -92,74 +96,90 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 		wg.Done()
 	}
 
-	for scanner.Scan() {
-		args := strings.Split(scanner.Text(), " ")
-		argLen = len(args)
-		if argLen == 0 || (argLen == 1 && args[0] == "") {
-			fail(ErrEmptyCommand)
-			continue
+	tknc := make(chan string)
+
+	go func(sendc chan<- string) {
+		for scanner.Scan() {
+			sendc <- scanner.Text()
 		}
 
-		if !bufferingTransaction {
-			t = Transaction{
-				Commands: CommandSet{},
-				Done:     respond,
-			}
+		if err := scanner.Err(); err != nil && ctx.Err() != context.Canceled && !closed {
+			log.Println("Scan err:")
+			fmt.Println(err)
 		}
+	}(tknc)
 
-		switch args[0] {
-		case BEGIN:
-			bufferingTransaction = true
+L:
+	for {
+		select {
+		case <-ctx.Done():
+			break L
 
-		case COMMIT:
-			bufferingTransaction = false
-
-		case DEL, GET:
-			if argLen < 2 {
-				fail(ErrInsufficientArgs)
+		case s := <-tknc:
+			args := strings.Split(s, " ")
+			argLen = len(args)
+			if argLen == 0 || (argLen == 1 && args[0] == "") {
+				fail(ErrEmpty)
 				continue
 			}
 
-			t.Commands = append(t.Commands, args[0:2])
+			if !bufferingTransaction {
+				t = Transaction{
+					Commands: CommandSet{},
+					Done:     respond,
+				}
+			}
 
-		case SET:
-			if argLen < 3 {
-				fail(ErrInsufficientArgs)
+			switch args[0] {
+			case BEGIN:
+				bufferingTransaction = true
+
+			case COMMIT:
+				bufferingTransaction = false
+
+			case DEL, GET:
+				if argLen < 2 {
+					fail(ErrArgs)
+					continue
+				}
+
+				t.Commands = append(t.Commands, args[0:2])
+
+			case SET:
+				if argLen < 3 {
+					fail(ErrArgs)
+					continue
+				}
+
+				t.Commands = append(
+					t.Commands,
+					[]string{
+						args[0],
+						args[1],
+						strings.Join(args[2:], " "),
+					},
+				)
+
+			case QUIT:
+				wg.Wait()
+				closed = true
+				conn.Close()
+				return
+
+			default:
+				fail(ErrUnknown)
 				continue
 			}
 
-			t.Commands = append(
-				t.Commands,
-				[]string{
-					args[0],
-					args[1],
-					strings.Join(args[2:], " "),
-				},
-			)
-
-		case QUIT:
-			wg.Wait()
-			conn.Close()
-			log.Println("Closed connection")
-			return
-
-		default:
-			fail(ErrUnknownCommand)
-			continue
-		}
-
-		if !bufferingTransaction {
-			wg.Add(1)
-			trans <- t
+			if !bufferingTransaction {
+				wg.Add(1)
+				trans <- t
+			}
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("Session scanner received an error: %v\n", err)
-	}
-
+	closed = true
 	conn.Close()
-	log.Println("Closed connection")
 }
 
 // Adapted from bufio/scan.go
@@ -181,41 +201,42 @@ func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
 // KVStore is a key-value store
 type KVStore struct {
-	store map[string]string
+	cache map[string]string
 }
 
 // NewStore returns an initialized key value store.
 func NewStore() *KVStore {
 	return &KVStore{
-		store: make(map[string]string),
+		cache: make(map[string]string),
 	}
 }
 
 // Get returns the string at the given key, or an empty string.
 func (s *KVStore) Get(k string) string {
-	return s.store[k]
+	return s.cache[k]
 }
 
 // Set writes the value at the given key.
 func (s *KVStore) Set(k, v string) error {
-	s.store[k] = v
+	s.cache[k] = v
 	return nil
 }
 
 // Del deletes the given key from the store.
 func (s *KVStore) Del(k string) error {
-	delete(s.store, k)
+	delete(s.cache, k)
 	return nil
 }
 
 func main() {
-	log.Println("Opening connection on localhost:8888...")
+	log.Println("PID:", os.Getpid())
+	log.Println("Starting server...")
 	srv, err := net.Listen("tcp", ":8888")
 	if err != nil {
 		log.Fatalln(fmt.Sprintf("Failed to listen on port 8888: %v", err))
 	}
-	defer srv.Close()
 
+	var closing uint32
 	store := NewStore()
 
 	sig := make(chan os.Signal)
@@ -223,17 +244,31 @@ func main() {
 	trans := make(chan Transaction, 1024)
 	ctx, stop := context.WithCancel(context.Background())
 
+	cleanup := func() {
+		log.Println("\nShutting down server.")
+
+		atomic.AddUint32(&closing, 1)
+		// trigger connections close
+		stop()
+		// give it a sec...
+		time.Sleep(time.Second)
+		srv.Close()
+	}
+
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
 		for {
 			conn, err := srv.Accept()
 			if err != nil {
-				log.Printf("Error accepting connection: %v\n", err)
+				if atomic.LoadUint32(&closing) != 0 {
+					return
+				}
+
+				log.Printf("Error accepting connection: %v (%T)\n", err, err)
 				continue
 			}
 
-			log.Println("New connection")
 			conns <- conn
 		}
 	}()
@@ -275,15 +310,14 @@ func main() {
 		}
 	}(ctx, trans)
 
-	log.Println("Server ready")
+	log.Println("Listening: http://127.0.0.1:8888")
 
 	for {
 		select {
 		case conn := <-conns:
 			go StartSession(ctx, conn, trans)
 		case <-sig:
-			fmt.Println("\nShutting down server.")
-			stop()
+			cleanup()
 			os.Exit(0)
 		}
 	}
