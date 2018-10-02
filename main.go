@@ -78,6 +78,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 
 	expectMinArgs := func(argList []string, min int) bool {
 		if len(argList) < min {
+			bufferingTransaction = false
 			send(fmt.Sprintf("ErrArgLength The command issued requires at least %d arguments.", min))
 			return true
 		}
@@ -88,6 +89,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 	for scanner.Scan() {
 		args := strings.Split(scanner.Text(), " ")
 		if len(args) == 0 || args[0] == "" {
+			bufferingTransaction = false
 			send("ErrNoArgs Empty command.")
 			continue
 		}
@@ -132,6 +134,7 @@ func StartSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) 
 			return
 
 		default:
+			bufferingTransaction = false
 			send("ErrBadCommand Unknown command string received.")
 			continue
 		}
