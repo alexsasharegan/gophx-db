@@ -52,6 +52,7 @@ var (
 	ErrEmpty   = errors.New("ErrEmpty Empty command")
 	ErrArgs    = errors.New("ErrArgs Command received with incorrect number of arguments")
 	ErrUnknown = errors.New("ErrUnknown Unknown command string received")
+	ErrCmd     = errors.New("ErrCmd Invalid command received")
 	ErrConTerm = errors.New("ErrConTerm Server is terminating the connection")
 )
 
@@ -135,6 +136,14 @@ L:
 				bufferingTransaction = true
 
 			case COMMIT:
+				if !bufferingTransaction {
+					fail(ErrCmd)
+					continue
+				}
+				if len(t.Commands) == 0 {
+					fail(ErrEmpty)
+					continue
+				}
 				bufferingTransaction = false
 
 			case DEL, GET:
