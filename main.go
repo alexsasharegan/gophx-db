@@ -16,8 +16,7 @@ import (
 
 func main() {
 	// Handy to kill the process when you let a go routine run wild...
-	log.Println("PID:", os.Getpid())
-	log.Println("Starting server...")
+	// log.Println("PID:", os.Getpid())
 
 	srv, err := net.Listen("tcp", ":8888")
 	if err != nil {
