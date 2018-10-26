@@ -50,11 +50,9 @@ func main() {
 				if atomic.LoadUint32(&closing) != 0 {
 					return
 				}
-
 				log.Printf("Error accepting connection: %v (%T)\n", err, err)
 				continue
 			}
-
 			conns <- conn
 		}
 	}()
@@ -66,8 +64,7 @@ func main() {
 	for {
 		select {
 		case conn := <-conns:
-			go store.ClientSession(ctx, conn, trans)
-
+			go store.ServeClient(ctx, conn, trans)
 		case <-sig:
 			cleanup()
 			// Call exit in case connections are still lingering,

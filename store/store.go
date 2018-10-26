@@ -1,19 +1,5 @@
 package store
 
-/*------------------------------------------------------------------------------
-Requirements
-============
-* Listen for TCP connections on :8888
-* Handle Commands (terminated by CRLF):
-  - GET
-  - SET
-  - DEL
-  - QUIT
-* Support Transactions (terminated by CRLF):
-  - BEGIN
-  - COMMIT
-------------------------------------------------------------------------------*/
-
 import (
 	"bufio"
 	"bytes"
@@ -91,12 +77,11 @@ func NewTransChan() chan Transaction {
 	return make(chan Transaction, 1024)
 }
 
-// ClientSession listening for commands.
-func ClientSession(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
+// ServeClient listening for commands.
+func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	var (
-		t  Transaction
-		wg sync.WaitGroup
-
+		t      Transaction
+		wg     sync.WaitGroup
 		argLen int
 
 		closed, buffering bool
@@ -106,14 +91,13 @@ func ClientSession(ctx context.Context, conn net.Conn, trans chan<- Transaction)
 	scanner.Split(scanCRLF)
 
 	send := func(s string) (int, error) {
+		fmt.Println("Sending '" + s + "' to client")
 		return conn.Write(append([]byte(s), '\r', '\n'))
 	}
-
 	fail := func(err error) {
 		buffering = false
 		send(err.Error())
 	}
-
 	respond := func(commands []Command) {
 		for _, cmd := range commands {
 			send(cmd.Result)
@@ -139,7 +123,6 @@ Loop:
 		select {
 		case <-ctx.Done():
 			break Loop
-
 		case s := <-tknc:
 			args := strings.Split(s, " ")
 			argLen = len(args)
@@ -147,22 +130,18 @@ Loop:
 				fail(ErrEmpty)
 				continue
 			}
-
 			if !buffering {
 				t = Transaction{
 					Commands: []Command{},
 					Done:     respond,
 				}
 			}
-
 			switch args[0] {
 			default:
 				fail(ErrUnknown)
 				continue
-
 			case "BEGIN":
 				buffering = true
-
 			case "COMMIT":
 				if !buffering {
 					fail(ErrCmd)
@@ -173,48 +152,40 @@ Loop:
 					continue
 				}
 				buffering = false
-
 			case "DEL":
 				if argLen < 2 {
 					fail(ErrArgs)
 					continue
 				}
-
 				t.Commands = append(t.Commands, Command{
 					Type: DEL,
 					Key:  args[1],
 				})
-
 			case "GET":
 				if argLen < 2 {
 					fail(ErrArgs)
 					continue
 				}
-
 				t.Commands = append(t.Commands, Command{
 					Type: GET,
 					Key:  args[1],
 				})
-
 			case "SET":
 				if argLen < 3 {
 					fail(ErrArgs)
 					continue
 				}
-
 				t.Commands = append(t.Commands, Command{
 					Type:  SET,
 					Key:   args[1],
 					Value: strings.Join(args[2:], " "),
 				})
-
 			case "QUIT":
 				wg.Wait()
 				closed = true
 				conn.Close()
 				return
 			}
-
 			if !buffering {
 				wg.Add(1)
 				trans <- t
@@ -229,32 +200,25 @@ Loop:
 // RunDB listens for transactions or a done signal from context.
 func RunDB(ctx context.Context, trans <-chan Transaction) {
 	store := &KeyValue{make(map[string]string)}
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-
 		case t := <-trans:
 			for i, cmd := range t.Commands {
-
 				switch cmd.Type {
 				case GET:
 					cmd.Result = store.Get(cmd.Key)
-
 				case SET:
 					store.Set(cmd.Key, cmd.Value)
 					cmd.Result = "OK"
-
 				case DEL:
 					store.Del(cmd.Key)
 					cmd.Result = "OK"
 				}
-
 				// Value semantics require us to reassign this to mutate the slice.
 				t.Commands[i] = cmd
 			}
-
 			t.Done(t.Commands)
 		}
 	}
