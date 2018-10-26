@@ -1,5 +1,19 @@
 # gophx-db
 
+Submission for the October 2018 Golang Phoenix database challenge.
+
+## Architecture
+
+The database core is implemented in a dedicated go routine with a buffered
+channel acting as the transaction queue. This means the data store is owned by a
+single go routine, and all operations are performed synchronously.
+
+The transaction queue pipes transactions, which are a list of commands. A
+command is one of GET, SET, or DEL, and the data structure contains its Type,
+Key, Value, and Result. These transactions use value semantics to avoid escape
+analysis as data is moved across go routines--this cuts down on the amount of
+allocations performed while dispatching transactions of commands.
+
 ## Details
 
 Hey everyone! Super excited for this meetup. For October, we'll be building a
