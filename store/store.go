@@ -14,9 +14,10 @@ import (
 
 // Command codes
 const (
-	GET = 1
-	SET = 2
-	DEL = 3
+	_ = iota
+	GET
+	SET
+	DEL
 )
 
 var (
@@ -35,10 +36,12 @@ var (
 
 // Command is a uniform container for commands.
 type Command struct {
-	Type   uint
-	Key    string
-	Value  string
-	Result string
+	// Type is an integer representing GET, SET, or DEL
+	Type uint
+	// Key is the key for the DB operation
+	Key string
+	// Value is the value to set going IN, and the result going OUT
+	Value string
 }
 
 // DoneFunc is a callback for the command set with results applied.
@@ -100,7 +103,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	}
 	respond := func(commands []Command) {
 		for _, cmd := range commands {
-			send(cmd.Result)
+			send(cmd.Value)
 		}
 		wg.Done()
 	}
@@ -208,13 +211,13 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 			for i, cmd := range t.Commands {
 				switch cmd.Type {
 				case GET:
-					cmd.Result = store.Get(cmd.Key)
+					cmd.Value = store.Get(cmd.Key)
 				case SET:
 					store.Set(cmd.Key, cmd.Value)
-					cmd.Result = "OK"
+					cmd.Value = "OK"
 				case DEL:
 					store.Del(cmd.Key)
-					cmd.Result = "OK"
+					cmd.Value = "OK"
 				}
 				// Value semantics require us to reassign this to mutate the slice.
 				t.Commands[i] = cmd
