@@ -94,7 +94,6 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	scanner.Split(scanCRLF)
 
 	send := func(s string) (int, error) {
-		fmt.Println("Sending '" + s + "' to client")
 		return conn.Write(append([]byte(s), '\r', '\n'))
 	}
 	fail := func(err error) {

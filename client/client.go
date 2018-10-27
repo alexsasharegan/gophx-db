@@ -9,12 +9,14 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 var crlf = []byte{'\r', '\n'}
 
 func main() {
 	var wg sync.WaitGroup
+	start := time.Now()
 
 	for i := 0; i < 10000; i++ {
 		wg.Add(1)
@@ -26,24 +28,22 @@ func main() {
 				)
 			}
 
-			log.Println("Connection made")
-
 			var wgInner sync.WaitGroup
 			ctx, stop := context.WithCancel(context.Background())
 			sendx, recvx := make(chan []byte), make(chan []byte)
 
-			go func(ctx context.Context, rx <-chan []byte) {
+			go func() {
 				var j int
 				var isTrans, isQuit bool
 				for {
 					select {
 					case <-ctx.Done():
 						return
-					case b := <-rx:
-						isTrans = (bytes.Contains(b, []byte("BEGIN")) || bytes.Contains(b, []byte("COMMIT")))
+					case b := <-sendx:
+						isTrans = bytes.Contains(b, []byte("BEGIN")) || bytes.Contains(b, []byte("COMMIT"))
 						isQuit = bytes.Contains(b, []byte("QUIT"))
 
-						if bytes.Contains(b, []byte("\r\n")) && !isTrans && !isQuit {
+						if !isTrans && !isQuit {
 							wgInner.Add(1)
 						}
 
@@ -52,19 +52,18 @@ func main() {
 							j = len(b)
 						}
 
-						fmt.Printf("Send: '%s'\n", b[0:j])
 						conn.Write(b)
 					}
 				}
-			}(ctx, sendx)
+			}()
 
-			go func(ctx context.Context, wx chan<- []byte) {
+			go func() {
 				scanner := bufio.NewScanner(conn)
 				scanner.Split(scanCRLF)
 
 				for scanner.Scan() {
 					b := scanner.Bytes()
-					wx <- b
+					recvx <- b
 				}
 
 				if err := scanner.Err(); err != nil {
@@ -72,20 +71,20 @@ func main() {
 				}
 
 				stop()
-			}(ctx, recvx)
+			}()
 
-			go func(ctx context.Context, rx <-chan []byte) {
+			go func() {
 				for {
 					select {
 					case <-ctx.Done():
 						return
-					case b := <-rx:
+					case <-recvx:
 						wgInner.Done()
-						fmt.Println(fmt.Sprintf("Recv: '%s'", b))
 					}
 				}
-			}(ctx, recvx)
+			}()
 
+			sendx <- []byte("GET foo\r\n")
 			sendx <- []byte("BEGIN\r\n")
 			sendx <- []byte("GET foo\r\n")
 			sendx <- []byte("SET foo bar\r\n")
@@ -94,17 +93,17 @@ func main() {
 			sendx <- []byte("COMMIT\r\n")
 			sendx <- []byte("SET foo bar baz\r\n")
 			sendx <- []byte(fmt.Sprintf("SET lorem%d Lorem ipsum dolor, sit amet consectetur adipisicing elit. Saepe possimus tempora culpa accusamus aliquid ut dolorum reiciendis ducimus doloremque quasi est ipsam, similique cupiditate nam corrupti incidunt rerum reprehenderit beatae!Lorem ipsum dolor, sit amet consectetur adipisicing elit. Saepe possimus tempora culpa accusamus aliquid ut dolorum reiciendis ducimus doloremque quasi est ipsam, similique cupiditate nam corrupti incidunt rerum reprehenderit beatae!Lorem ipsum dolor, sit amet consectetur adipisicing elit. Saepe possimus tempora culpa accusamus aliquid ut dolorum reiciendis ducimus doloremque quasi est ipsam, similique cupiditate nam corrupti incidunt rerum reprehenderit beatae!\r\n", count))
-			// sendx <- []byte("set foo bar baz\r\n")
-			// sendx <- []byte("\r\n")
-			// sendx <- []byte("GET ")
-			// sendx <- []byte("foo ")
-			// sendx <- []byte("\r\n")
 			sendx <- []byte("QUIT\r\n")
 			wgInner.Wait()
 			wg.Done()
 		}(i)
 		wg.Wait()
 	}
+
+	total := time.Now().Sub(start)
+	fmt.Println(
+		fmt.Sprintf("Took %s", total),
+	)
 }
 
 // Adapted from bufio/scan.go
