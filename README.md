@@ -14,6 +14,112 @@ Key, Value, and Result. These transactions use value semantics to avoid escape
 analysis as data is moved across go routines--this cuts down on the amount of
 allocations performed while dispatching transactions of commands.
 
+### Using `string`
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      2037 ns/op	       8 B/op	       1 allocs/op
+BenchmarkParseSet-12    	 1000000	      2083 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParseDel-12    	  500000	      2676 ns/op	       8 B/op	       1 allocs/op
+BenchmarkDBGet-12       	 1000000	      1023 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       700 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 3000000	       534 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 2000000	       971 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 64.2% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	13.778s
+Success: Benchmarks passed.
+```
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      1721 ns/op	       8 B/op	       1 allocs/op
+BenchmarkParseSet-12    	 1000000	      2199 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParseDel-12    	  500000	      2232 ns/op	       8 B/op	       1 allocs/op
+BenchmarkDBGet-12       	 2000000	       707 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       611 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 3000000	       531 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 1000000	      1021 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 64.2% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	12.253s
+Success: Benchmarks passed.
+```
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      2185 ns/op	       8 B/op	       1 allocs/op
+BenchmarkParseSet-12    	 1000000	      1859 ns/op	      32 B/op	       1 allocs/op
+BenchmarkParseDel-12    	 1000000	      1592 ns/op	       8 B/op	       1 allocs/op
+BenchmarkDBGet-12       	 3000000	       657 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       517 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 2000000	       767 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 2000000	       756 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 64.2% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	14.955s
+Success: Benchmarks passed.
+```
+
+### Zero Allocation Using `[]byte`
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      1904 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseSet-12    	 1000000	      1859 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseDel-12    	 1000000	      2461 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBGet-12       	 3000000	       561 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       961 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 2000000	       544 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 2000000	       857 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 62.8% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	15.672s
+Success: Benchmarks passed.
+```
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      1806 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseSet-12    	 1000000	      2202 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseDel-12    	 1000000	      2330 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBGet-12       	 2000000	       782 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       992 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 2000000	       826 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 2000000	       892 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 62.8% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	16.359s
+Success: Benchmarks passed.
+```
+
+```txt
+goos: linux
+goarch: amd64
+pkg: github.com/alexsasharegan/gophx-db/store
+BenchmarkParseGet-12    	 1000000	      1698 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseSet-12    	 1000000	      2353 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParseDel-12    	  500000	      2262 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBGet-12       	 2000000	       758 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBDel-12       	 2000000	       669 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBSet-12       	 3000000	       595 ns/op	       0 B/op	       0 allocs/op
+BenchmarkDBMulti-12     	 2000000	       876 ns/op	       0 B/op	       0 allocs/op
+PASS
+coverage: 62.8% of statements
+ok  	github.com/alexsasharegan/gophx-db/store	14.504s
+Success: Benchmarks passed.
+```
+
 ## Details
 
 Hey everyone! Super excited for this meetup. For October, we'll be building a
