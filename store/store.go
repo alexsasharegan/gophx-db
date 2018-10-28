@@ -6,9 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash"
+	"hash/fnv"
 	"log"
 	"net"
-	"strings"
 	"sync"
 )
 
@@ -42,9 +43,9 @@ type Command struct {
 	// Type is an integer representing GET, SET, or DEL
 	Type CommandType
 	// Key is the key for the DB operation
-	Key string
+	Key []byte
 	// Value is the value to set going IN, and the result going OUT
-	Value string
+	Value []byte
 }
 
 // DoneFunc is a callback for the command set with results applied.
@@ -58,23 +59,49 @@ type Transaction struct {
 
 // KeyValue is a key-value store
 type KeyValue struct {
-	cache map[string]string
+	cache map[uint64][]byte
+	h     hash.Hash64
+}
+
+func (kv *KeyValue) hash(b []byte) (uint64, error) {
+	kv.h.Reset()
+	_, err := kv.h.Write(b)
+	if err != nil {
+		return 0, err
+	}
+
+	return kv.h.Sum64(), nil
 }
 
 // Get returns the string at the given key, or an empty string.
-func (s *KeyValue) Get(k string) string {
-	return s.cache[k]
+func (kv *KeyValue) Get(k []byte) []byte {
+	key, err := kv.hash(k)
+	if err != nil {
+		return nil
+	}
+
+	return kv.cache[key]
 }
 
 // Set writes the value at the given key.
-func (s *KeyValue) Set(k, v string) error {
-	s.cache[k] = v
+func (kv *KeyValue) Set(k []byte, v []byte) error {
+	key, err := kv.hash(k)
+	if err != nil {
+		return err
+	}
+
+	kv.cache[key] = v
 	return nil
 }
 
 // Del deletes the given key from the store.
-func (s *KeyValue) Del(k string) error {
-	delete(s.cache, k)
+func (kv *KeyValue) Del(k []byte) error {
+	key, err := kv.hash(k)
+	if err != nil {
+		return err
+	}
+
+	delete(kv.cache, key)
 	return nil
 }
 
@@ -89,33 +116,36 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		t  Transaction
 		wg sync.WaitGroup
 
-		cmd, key, val     string
+		cmd, key, val     []byte
 		closed, buffering bool
 
 		cmds = make([]Command, 0, 8)
 	)
 
-	send := func(s string) (int, error) {
-		return conn.Write(append([]byte(s), '\r', '\n'))
+	send := func(b []byte) (int, error) {
+		return conn.Write(append(b, '\r', '\n'))
 	}
 	fail := func(err error) {
 		buffering = false
-		send(err.Error())
+		send([]byte(err.Error()))
 	}
 	respond := func(commands []Command) {
 		for _, c := range commands {
-			send(c.Value)
+			if c.Value == nil && c.Type != GET {
+				send([]byte("OK"))
+			} else {
+				send(c.Value)
+			}
 		}
 		wg.Done()
 	}
 
-	tknc := make(chan string)
+	tknc := make(chan []byte)
 	scanner := bufio.NewScanner(conn)
 	scanner.Split(ScanCRLF)
 	go func() {
 		for scanner.Scan() {
-			// 1 alloc: runtime.slicebytetostring
-			tknc <- scanner.Text()
+			tknc <- scanner.Bytes()
 		}
 
 		if err := scanner.Err(); err != nil && ctx.Err() != context.Canceled && !closed {
@@ -129,9 +159,9 @@ Loop:
 		select {
 		case <-ctx.Done():
 			break Loop
-		case s := <-tknc:
-			cmd, key, val = splitCmds(s)
-			if cmd == "" {
+		case b := <-tknc:
+			cmd, key, val = splitCmds(b)
+			if bytes.Equal(cmd, nil) {
 				fail(ErrEmpty)
 				continue
 			}
@@ -142,13 +172,13 @@ Loop:
 				}
 			}
 
-			switch cmd {
+			switch {
 			default:
 				fail(ErrUnknown)
 				continue
-			case "BEGIN":
+			case bytes.Equal(cmd, []byte("BEGIN")):
 				buffering = true
-			case "COMMIT":
+			case bytes.Equal(cmd, []byte("COMMIT")):
 				if !buffering {
 					fail(ErrCmd)
 					continue
@@ -158,8 +188,8 @@ Loop:
 					continue
 				}
 				buffering = false
-			case "DEL":
-				if key == "" {
+			case bytes.Equal(cmd, []byte("DEL")):
+				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
 				}
@@ -167,8 +197,8 @@ Loop:
 					Type: DEL,
 					Key:  key,
 				})
-			case "GET":
-				if key == "" {
+			case bytes.Equal(cmd, []byte("GET")):
+				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
 				}
@@ -176,8 +206,8 @@ Loop:
 					Type: GET,
 					Key:  key,
 				})
-			case "SET":
-				if key == "" {
+			case bytes.Equal(cmd, []byte("SET")):
+				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
 				}
@@ -186,7 +216,7 @@ Loop:
 					Key:   key,
 					Value: val,
 				})
-			case "QUIT":
+			case bytes.Equal(cmd, []byte("QUIT")):
 				wg.Wait()
 				closed = true
 				conn.Close()
@@ -205,7 +235,11 @@ Loop:
 
 // RunDB listens for transactions or a done signal from context.
 func RunDB(ctx context.Context, trans <-chan Transaction) {
-	store := &KeyValue{make(map[string]string)}
+	store := &KeyValue{
+		cache: make(map[uint64][]byte),
+		h:     fnv.New64(),
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -216,11 +250,17 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 				case GET:
 					cmd.Value = store.Get(cmd.Key)
 				case SET:
-					store.Set(cmd.Key, cmd.Value)
-					cmd.Value = "OK"
+					if err := store.Set(cmd.Key, cmd.Value); err != nil {
+						cmd.Value = []byte(err.Error())
+					} else {
+						cmd.Value = nil
+					}
 				case DEL:
-					store.Del(cmd.Key)
-					cmd.Value = "OK"
+					if err := store.Del(cmd.Key); err != nil {
+						cmd.Value = []byte(err.Error())
+					} else {
+						cmd.Value = nil
+					}
 				}
 				t.Commands[i] = cmd
 			}
@@ -247,18 +287,18 @@ func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 // Adapted from the strings package function 'genSplit'.
-func splitCmds(s string) (cmd, key, val string) {
-	m := strings.IndexByte(s, ' ')
+func splitCmds(b []byte) (cmd, key, val []byte) {
+	m := bytes.IndexByte(b, ' ')
 	if m < 0 {
-		return s, key, val
+		return b, key, val
 	}
-	cmd = s[:m]
-	s = s[m+1:]
+	cmd = b[:m]
+	b = b[m+1:]
 
-	m = strings.IndexByte(s, ' ')
+	m = bytes.IndexByte(b, ' ')
 	if m < 0 {
-		return cmd, s, val
+		return cmd, b, val
 	}
 
-	return cmd, s[:m], s[m+1:]
+	return cmd, b[:m], b[m+1:]
 }

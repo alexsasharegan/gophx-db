@@ -2,10 +2,12 @@ package store
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 )
@@ -26,11 +28,11 @@ func TestCmdSplit(t *testing.T) {
 		{"   any command here", []string{"", "", " any command here"}},
 	}
 
-	sample := make([]string, 3)
+	sample := make([][]byte, 3)
 	for _, tc := range tt {
-		sample[0], sample[1], sample[2] = splitCmds(tc.data)
+		sample[0], sample[1], sample[2] = splitCmds([]byte(tc.data))
 		for i, expected := range tc.expected {
-			if expected != sample[i] {
+			if expected != string(sample[i]) {
 				t.Errorf("Expected '%s', received '%s'\n", expected, sample[i])
 			}
 		}
@@ -45,7 +47,7 @@ func TestClient(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	trans := NewTransactionQueue()
-	results := make(chan string, 16)
+	results := make(chan []byte, 16)
 
 	srv, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -75,15 +77,15 @@ func TestClient(t *testing.T) {
 	go ServeClient(ctx, conn, trans)
 
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, "")
+	assertEQ(t, <-results, nil)
 	client.Write([]byte("SET foo a value with spaces\r\n"))
-	assertEQ(t, <-results, "OK")
+	assertEQ(t, <-results, []byte("OK"))
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, "a value with spaces")
+	assertEQ(t, <-results, []byte("a value with spaces"))
 	client.Write([]byte("DEL foo\r\n"))
-	assertEQ(t, <-results, "OK")
+	assertEQ(t, <-results, []byte("OK"))
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, "")
+	assertEQ(t, <-results, nil)
 
 	client.Write([]byte("BEGIN\r\n"))
 	client.Write([]byte("GET test\r\n"))
@@ -92,11 +94,18 @@ func TestClient(t *testing.T) {
 	client.Write([]byte("DEL test\r\n"))
 	client.Write([]byte("GET test\r\n"))
 	client.Write([]byte("COMMIT\r\n"))
-	assertEQ(t, <-results, "")
-	assertEQ(t, <-results, "OK")
-	assertEQ(t, <-results, "1")
-	assertEQ(t, <-results, "OK")
-	assertEQ(t, <-results, "")
+	assertEQ(t, <-results, nil)
+	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-results, []byte("1"))
+	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-results, nil)
+
+	for i := 0; i < 1000; i++ {
+		client.Write([]byte(fmt.Sprintf("SET k-%d %d\r\n", i, i)))
+		assertEQ(t, <-results, []byte("OK"))
+		client.Write([]byte(fmt.Sprintf("GET k-%d\r\n", i)))
+		assertEQ(t, <-results, []byte(strconv.Itoa(i)))
+	}
 
 	client.Write([]byte("QUIT\r\n"))
 }
@@ -107,37 +116,37 @@ func TestParsing(t *testing.T) {
 
 	// Error states --------------------------------------------------------------
 	client.Write([]byte("\r\n"))
-	assertEQ(t, readConn(t, client), ErrEmpty.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrEmpty.Error()), '\r', '\n'))
 
 	client.Write([]byte("COMMIT\r\n"))
-	assertEQ(t, readConn(t, client), ErrCmd.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrCmd.Error()), '\r', '\n'))
 
 	client.Write([]byte("BEGIN\r\n"))
 	client.Write([]byte("COMMIT\r\n"))
-	assertEQ(t, readConn(t, client), ErrEmpty.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrEmpty.Error()), '\r', '\n'))
 
 	client.Write([]byte("notacommand\r\n"))
-	assertEQ(t, readConn(t, client), ErrUnknown.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrUnknown.Error()), '\r', '\n'))
 
 	client.Write([]byte("DEL\r\n"))
-	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrArgs.Error()), '\r', '\n'))
 
 	client.Write([]byte("GET\r\n"))
-	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrArgs.Error()), '\r', '\n'))
 
 	client.Write([]byte("SET\r\n"))
-	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+	assertEQ(t, readConn(t, client), append([]byte(ErrArgs.Error()), '\r', '\n'))
 
 	// Valid commands ------------------------------------------------------------
 	client.Write([]byte("GET foo\r\n"))
 	trans := <-rx
 	assertCmdLen(t, trans, 1)
-	assertCmd(t, trans.Commands[0], GET, "foo", "")
+	assertCmd(t, trans.Commands[0], GET, []byte("foo"), nil)
 
 	client.Write([]byte("SET foo value with spaces\r\n"))
 	trans = <-rx
 	assertCmdLen(t, trans, 1)
-	assertCmd(t, trans.Commands[0], SET, "foo", "value with spaces")
+	assertCmd(t, trans.Commands[0], SET, []byte("foo"), []byte("value with spaces"))
 
 	client.Write([]byte("BEGIN\r\n"))
 	client.Write([]byte("SET foo value with spaces\r\n"))
@@ -146,15 +155,15 @@ func TestParsing(t *testing.T) {
 	client.Write([]byte("COMMIT\r\n"))
 	trans = <-rx
 	assertCmdLen(t, trans, 3)
-	assertCmd(t, trans.Commands[0], SET, "foo", "value with spaces")
-	assertCmd(t, trans.Commands[1], GET, "foo", "")
-	assertCmd(t, trans.Commands[2], DEL, "foo", "")
+	assertCmd(t, trans.Commands[0], SET, []byte("foo"), []byte("value with spaces"))
+	assertCmd(t, trans.Commands[1], GET, []byte("foo"), nil)
+	assertCmd(t, trans.Commands[2], DEL, []byte("foo"), nil)
 
 	// Edge cases ----------------------------------------------------------------
 	client.Write([]byte("GET foo and some other junk\r\n"))
 	trans = <-rx
 	assertCmdLen(t, trans, 1)
-	assertCmd(t, trans.Commands[0], GET, "foo", "")
+	assertCmd(t, trans.Commands[0], GET, []byte("foo"), nil)
 }
 
 func BenchmarkParseGet(b *testing.B) {
@@ -208,22 +217,85 @@ func setupParse() (net.Conn, chan Transaction, func()) {
 	}
 }
 
-func BenchmarkDB(b *testing.B) {
+func BenchmarkDBGet(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
 	var wg sync.WaitGroup
 	transaction := Transaction{
 		Commands: []Command{
-			Command{Type: GET, Key: "foo"},
-			Command{Type: SET, Key: "foo", Value: "bar"},
-			Command{Type: SET, Key: "a", Value: "1"},
-			Command{Type: SET, Key: "a", Value: "2"},
-			Command{Type: SET, Key: "b", Value: "2"},
-			Command{Type: DEL, Key: "foo"},
-			Command{Type: GET, Key: "foo"},
-			Command{Type: GET, Key: "a"},
-			Command{Type: GET, Key: "b"},
+			Command{Type: GET, Key: []byte("foo")},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBDel(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: DEL, Key: []byte("foo")},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBSet(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: SET, Key: []byte("foo"), Value: []byte("bar")},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBMulti(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: GET, Key: []byte("foo")},
+			Command{Type: SET, Key: []byte("foo"), Value: []byte("bar")},
+			Command{Type: SET, Key: []byte("a"), Value: []byte("1")},
+			Command{Type: SET, Key: []byte("a"), Value: []byte("2")},
+			Command{Type: SET, Key: []byte("b"), Value: []byte("2")},
+			Command{Type: DEL, Key: []byte("foo")},
+			Command{Type: GET, Key: []byte("foo")},
+			Command{Type: GET, Key: []byte("a")},
+			Command{Type: GET, Key: []byte("b")},
 		},
 		Done: func(cmds []Command) {
 			wg.Done()
@@ -248,12 +320,12 @@ func setupDB() (chan Transaction, func()) {
 	}
 }
 
-func scanConn(rx net.Conn, c chan string) {
+func scanConn(rx net.Conn, c chan []byte) {
 	scanner := bufio.NewScanner(rx)
 	scanner.Split(ScanCRLF)
 
 	for scanner.Scan() {
-		c <- scanner.Text()
+		c <- scanner.Bytes()
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -264,29 +336,29 @@ func scanConn(rx net.Conn, c chan string) {
 // byte slice for use with readConn
 var buf = make([]byte, 4096)
 
-func readConn(t *testing.T, conn net.Conn) string {
+func readConn(t *testing.T, conn net.Conn) []byte {
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return string(buf[:n])
+	return buf[:n]
 }
 
-func assertEQ(t *testing.T, actual, expected string) {
-	if actual != expected {
+func assertEQ(t *testing.T, actual, expected []byte) {
+	if !bytes.Equal(actual, expected) {
 		t.Errorf("Expected '%s', received: '%s'", expected, actual)
 	}
 }
 
-func assertCmd(t *testing.T, c Command, ctype CommandType, key, value string) {
+func assertCmd(t *testing.T, c Command, ctype CommandType, key, value []byte) {
 	if c.Type != ctype {
 		t.Errorf("Expected %v type, received %v\n", ctype, c.Type)
 	}
-	if c.Key != key {
+	if !bytes.Equal(c.Key, key) {
 		t.Errorf("Expected '%s' key, received '%s'\n", key, c.Key)
 	}
-	if c.Value != value {
+	if !bytes.Equal(c.Value, value) {
 		t.Errorf("Expected '%s' value, received '%s'\n", value, c.Value)
 	}
 }
