@@ -123,22 +123,22 @@ func BenchmarkDB(b *testing.B) {
 	done := func(cmds []Command) {
 		wg.Done()
 	}
+	t = Transaction{
+		Commands: []Command{
+			Command{Type: GET, Key: "foo"},
+			Command{Type: SET, Key: "foo", Value: "bar"},
+			Command{Type: SET, Key: "a", Value: "1"},
+			Command{Type: SET, Key: "a", Value: "2"},
+			Command{Type: SET, Key: "b", Value: "2"},
+			Command{Type: DEL, Key: "foo"},
+			Command{Type: GET, Key: "foo"},
+			Command{Type: GET, Key: "a"},
+			Command{Type: GET, Key: "b"},
+		},
+		Done: done,
+	}
 
 	for n := 0; n < b.N; n++ {
-		t = Transaction{
-			Commands: []Command{
-				Command{Type: GET, Key: "foo"},
-				Command{Type: SET, Key: "foo", Value: "bar"},
-				Command{Type: SET, Key: "a", Value: "1"},
-				Command{Type: SET, Key: "a", Value: "2"},
-				Command{Type: SET, Key: "b", Value: "2"},
-				Command{Type: DEL, Key: "foo"},
-				Command{Type: GET, Key: "foo"},
-				Command{Type: GET, Key: "a"},
-				Command{Type: GET, Key: "b"},
-			},
-			Done: done,
-		}
 		// WaitGroup here to ensure the result is fully processed
 		wg.Add(1)
 		trans <- t

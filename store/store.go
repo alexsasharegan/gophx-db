@@ -91,6 +91,8 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 
 		cmd, key, val     string
 		closed, buffering bool
+
+		cmds = make([]Command, 0, 8)
 	)
 
 	send := func(s string) (int, error) {
@@ -134,7 +136,7 @@ Loop:
 			}
 			if !buffering {
 				t = Transaction{
-					Commands: []Command{},
+					Commands: cmds[:0],
 					Done:     respond,
 				}
 			}
@@ -219,7 +221,6 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 					store.Del(cmd.Key)
 					cmd.Value = "OK"
 				}
-				// Value semantics require us to reassign this to mutate the slice.
 				t.Commands[i] = cmd
 			}
 			t.Done(t.Commands)
