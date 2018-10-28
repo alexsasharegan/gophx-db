@@ -44,7 +44,7 @@ func TestClient(t *testing.T) {
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	trans := NewTransChan()
+	trans := NewTransactionQueue()
 	results := make(chan string, 16)
 
 	srv, err := net.Listen("tcp", "127.0.0.1:0")
@@ -195,7 +195,7 @@ func BenchmarkParseDel(b *testing.B) {
 
 func setupParse() (net.Conn, chan Transaction, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
-	tx := NewTransChan()
+	tx := NewTransactionQueue()
 	client, server := net.Pipe()
 
 	go ServeClient(ctx, server, tx)
@@ -240,7 +240,7 @@ func BenchmarkDB(b *testing.B) {
 
 func setupDB() (chan Transaction, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
-	tx := NewTransChan()
+	tx := NewTransactionQueue()
 	go RunDB(ctx, tx)
 
 	return tx, func() {

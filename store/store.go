@@ -78,12 +78,12 @@ func (s *KeyValue) Del(k string) error {
 	return nil
 }
 
-// NewTransChan returns a buffered channel of Transaction
-func NewTransChan() chan Transaction {
+// NewTransactionQueue returns a buffered channel of Transaction
+func NewTransactionQueue() chan Transaction {
 	return make(chan Transaction, 512)
 }
 
-// ServeClient listening for commands.
+// ServeClient listens for commands and responds with results.
 func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	var (
 		t  Transaction

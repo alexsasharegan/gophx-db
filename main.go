@@ -22,7 +22,7 @@ func main() {
 
 	sigc := make(chan os.Signal)
 	connc := make(chan net.Conn)
-	tx := store.NewTransChan()
+	tx := store.NewTransactionQueue()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var closing uint32
