@@ -11,38 +11,24 @@ import (
 )
 
 func TestCmdSplit(t *testing.T) {
-	type testCase struct {
+	tt := []struct {
 		data     string
 		expected []string
-	}
-
-	tcs := []testCase{
-		testCase{
-			data:     "",
-			expected: []string{"", "", ""},
-		},
-		testCase{
-			data:     "GET",
-			expected: []string{"GET", "", ""},
-		},
-		testCase{
-			data:     "GET foo",
-			expected: []string{"GET", "foo", ""},
-		},
-		testCase{
-			data:     "SET foo bar",
-			expected: []string{"SET", "foo", "bar"},
-		},
-		testCase{
-			data:     "SET foo bar with spaces",
-			expected: []string{"SET", "foo", "bar with spaces"},
-		},
+	}{
+		{"", []string{"", "", ""}},
+		{"GET", []string{"GET", "", ""}},
+		{"GET foo", []string{"GET", "foo", ""}},
+		{"SET foo bar", []string{"SET", "foo", "bar"}},
+		{"SET foo bar with spaces", []string{"SET", "foo", "bar with spaces"}},
+		{"any command here", []string{"any", "command", "here"}},
+		{" any command here", []string{"", "any", "command here"}},
+		{"  any command here", []string{"", "", "any command here"}},
+		{"   any command here", []string{"", "", " any command here"}},
 	}
 
 	sample := make([]string, 3)
-	for _, tc := range tcs {
+	for _, tc := range tt {
 		sample[0], sample[1], sample[2] = splitCmds(tc.data)
-
 		for i, expected := range tc.expected {
 			if expected != sample[i] {
 				t.Errorf("Expected '%s', received '%s'\n", expected, sample[i])
@@ -116,87 +102,181 @@ func TestClient(t *testing.T) {
 }
 
 func TestParsing(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	transc := NewTransChan()
-	defer close(transc)
-	txA, txB := net.Pipe()
-	defer txA.Close()
-	defer txB.Close()
+	client, rx, done := setupParse()
+	defer done()
 
-	go ServeClient(ctx, txB, transc)
+	// Error states --------------------------------------------------------------
+	client.Write([]byte("\r\n"))
+	assertEQ(t, readConn(t, client), ErrEmpty.Error()+"\r\n")
 
-	txA.Write([]byte("GET foo\r\n"))
-	trans := <-transc
+	client.Write([]byte("COMMIT\r\n"))
+	assertEQ(t, readConn(t, client), ErrCmd.Error()+"\r\n")
+
+	client.Write([]byte("BEGIN\r\n"))
+	client.Write([]byte("COMMIT\r\n"))
+	assertEQ(t, readConn(t, client), ErrEmpty.Error()+"\r\n")
+
+	client.Write([]byte("notacommand\r\n"))
+	assertEQ(t, readConn(t, client), ErrUnknown.Error()+"\r\n")
+
+	client.Write([]byte("DEL\r\n"))
+	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+
+	client.Write([]byte("GET\r\n"))
+	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+
+	client.Write([]byte("SET\r\n"))
+	assertEQ(t, readConn(t, client), ErrArgs.Error()+"\r\n")
+
+	// Valid commands ------------------------------------------------------------
+	client.Write([]byte("GET foo\r\n"))
+	trans := <-rx
 	assertCmdLen(t, trans, 1)
 	assertCmd(t, trans.Commands[0], GET, "foo", "")
 
-	txA.Write([]byte("SET foo value with spaces\r\n"))
-	trans = <-transc
+	client.Write([]byte("SET foo value with spaces\r\n"))
+	trans = <-rx
 	assertCmdLen(t, trans, 1)
 	assertCmd(t, trans.Commands[0], SET, "foo", "value with spaces")
 
-	// Error states
-	txA.Write([]byte("\r\n"))
-	b := make([]byte, 256)
-	n, err := txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrEmpty.Error()+"\r\n")
-
-	txA.Write([]byte("COMMIT\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrCmd.Error()+"\r\n")
-
-	txA.Write([]byte("BEGIN\r\n"))
-	txA.Write([]byte("COMMIT\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrEmpty.Error()+"\r\n")
-
-	txA.Write([]byte("notacommand\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrUnknown.Error()+"\r\n")
-
-	txA.Write([]byte("DEL\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrArgs.Error()+"\r\n")
-
-	txA.Write([]byte("GET\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrArgs.Error()+"\r\n")
-
-	txA.Write([]byte("SET\r\n"))
-	n, err = txA.Read(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertEQ(t, string(b[:n]), ErrArgs.Error()+"\r\n")
-	// End error states
-
-	txA.Write([]byte("BEGIN\r\n"))
-	txA.Write([]byte("SET foo value with spaces\r\n"))
-	txA.Write([]byte("GET foo\r\n"))
-	txA.Write([]byte("DEL foo\r\n"))
-	txA.Write([]byte("COMMIT\r\n"))
-	trans = <-transc
+	client.Write([]byte("BEGIN\r\n"))
+	client.Write([]byte("SET foo value with spaces\r\n"))
+	client.Write([]byte("GET foo\r\n"))
+	client.Write([]byte("DEL foo\r\n"))
+	client.Write([]byte("COMMIT\r\n"))
+	trans = <-rx
 	assertCmdLen(t, trans, 3)
+	assertCmd(t, trans.Commands[0], SET, "foo", "value with spaces")
+	assertCmd(t, trans.Commands[1], GET, "foo", "")
 	assertCmd(t, trans.Commands[2], DEL, "foo", "")
+
+	// Edge cases ----------------------------------------------------------------
+	client.Write([]byte("GET foo and some other junk\r\n"))
+	trans = <-rx
+	assertCmdLen(t, trans, 1)
+	assertCmd(t, trans.Commands[0], GET, "foo", "")
+}
+
+func BenchmarkParseGet(b *testing.B) {
+	client, rx, done := setupParse()
+	defer done()
+
+	message := []byte("GET foo\r\n")
+
+	for n := 0; n < b.N; n++ {
+		client.Write(message)
+		<-rx
+	}
+}
+
+func BenchmarkParseSet(b *testing.B) {
+	client, rx, done := setupParse()
+	defer done()
+
+	message := []byte("SET foo bar with spaces\r\n")
+
+	for n := 0; n < b.N; n++ {
+		client.Write(message)
+		<-rx
+	}
+}
+
+func BenchmarkParseDel(b *testing.B) {
+	client, rx, done := setupParse()
+	defer done()
+
+	message := []byte("DEL foo\r\n")
+
+	for n := 0; n < b.N; n++ {
+		client.Write(message)
+		<-rx
+	}
+}
+
+func setupParse() (net.Conn, chan Transaction, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tx := NewTransChan()
+	client, server := net.Pipe()
+
+	go ServeClient(ctx, server, tx)
+
+	return client, tx, func() {
+		cancel()
+		close(tx)
+		client.Close()
+		server.Close()
+	}
+}
+
+func BenchmarkDB(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: GET, Key: "foo"},
+			Command{Type: SET, Key: "foo", Value: "bar"},
+			Command{Type: SET, Key: "a", Value: "1"},
+			Command{Type: SET, Key: "a", Value: "2"},
+			Command{Type: SET, Key: "b", Value: "2"},
+			Command{Type: DEL, Key: "foo"},
+			Command{Type: GET, Key: "foo"},
+			Command{Type: GET, Key: "a"},
+			Command{Type: GET, Key: "b"},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		// WaitGroup here to ensure the result is fully processed
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func setupDB() (chan Transaction, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tx := NewTransChan()
+	go RunDB(ctx, tx)
+
+	return tx, func() {
+		cancel()
+	}
+}
+
+func scanConn(rx net.Conn, c chan string) {
+	scanner := bufio.NewScanner(rx)
+	scanner.Split(ScanCRLF)
+
+	for scanner.Scan() {
+		c <- scanner.Text()
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, fmt.Errorf("Error during scan: %v", err))
+	}
+}
+
+// byte slice for use with readConn
+var buf = make([]byte, 4096)
+
+func readConn(t *testing.T, conn net.Conn) string {
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return string(buf[:n])
+}
+
+func assertEQ(t *testing.T, actual, expected string) {
+	if actual != expected {
+		t.Errorf("Expected '%s', received: '%s'", expected, actual)
+	}
 }
 
 func assertCmd(t *testing.T, c Command, ctype CommandType, key, value string) {
@@ -217,86 +297,5 @@ func assertCmdLen(t *testing.T, trans Transaction, length int) {
 			"Expected %d commands to be parsed, received %d\n",
 			length, len(trans.Commands),
 		)
-	}
-}
-
-func BenchmarkParsing(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	transc := NewTransChan()
-	defer close(transc)
-	txA, txB := net.Pipe()
-	defer txA.Close()
-	defer txB.Close()
-
-	go ServeClient(ctx, txB, transc)
-
-	messages := [][]byte{
-		[]byte("GET foo\r\n"),
-		[]byte("SET foo bar with spaces\r\n"),
-		[]byte("DEL foo\r\n"),
-	}
-
-	for n := 0; n < b.N; n++ {
-		txA.Write(messages[0])
-		<-transc
-		txA.Write(messages[1])
-		<-transc
-		txA.Write(messages[2])
-		<-transc
-	}
-}
-
-func BenchmarkDB(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	trans := NewTransChan()
-	go RunDB(ctx, trans)
-	var wg sync.WaitGroup
-	var t Transaction
-
-	done := func(cmds []Command) {
-		wg.Done()
-	}
-	t = Transaction{
-		Commands: []Command{
-			Command{Type: GET, Key: "foo"},
-			Command{Type: SET, Key: "foo", Value: "bar"},
-			Command{Type: SET, Key: "a", Value: "1"},
-			Command{Type: SET, Key: "a", Value: "2"},
-			Command{Type: SET, Key: "b", Value: "2"},
-			Command{Type: DEL, Key: "foo"},
-			Command{Type: GET, Key: "foo"},
-			Command{Type: GET, Key: "a"},
-			Command{Type: GET, Key: "b"},
-		},
-		Done: done,
-	}
-
-	for n := 0; n < b.N; n++ {
-		// WaitGroup here to ensure the result is fully processed
-		wg.Add(1)
-		trans <- t
-		wg.Wait()
-	}
-
-	cancel()
-}
-
-func scanConn(rx net.Conn, c chan string) {
-	scanner := bufio.NewScanner(rx)
-	scanner.Split(ScanCRLF)
-
-	for scanner.Scan() {
-		c <- scanner.Text()
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, fmt.Errorf("Error during scan: %v", err))
-	}
-}
-
-func assertEQ(t *testing.T, actual, expected string) {
-	if actual != expected {
-		t.Errorf("Expected '%s', received: '%s'", expected, actual)
 	}
 }
