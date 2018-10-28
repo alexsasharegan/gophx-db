@@ -80,16 +80,16 @@ func (s *KeyValue) Del(k string) error {
 
 // NewTransChan returns a buffered channel of Transaction
 func NewTransChan() chan Transaction {
-	return make(chan Transaction, 1024)
+	return make(chan Transaction, 512)
 }
 
 // ServeClient listening for commands.
 func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	var (
-		t      Transaction
-		wg     sync.WaitGroup
-		argLen int
+		t  Transaction
+		wg sync.WaitGroup
 
+		cmd, key, val     string
 		closed, buffering bool
 	)
 
@@ -101,8 +101,8 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		send(err.Error())
 	}
 	respond := func(commands []Command) {
-		for _, cmd := range commands {
-			send(cmd.Value)
+		for _, c := range commands {
+			send(c.Value)
 		}
 		wg.Done()
 	}
@@ -127,9 +127,8 @@ Loop:
 		case <-ctx.Done():
 			break Loop
 		case s := <-tknc:
-			args := strings.Split(s, " ")
-			argLen = len(args)
-			if argLen == 0 || (argLen == 1 && args[0] == "") {
+			cmd, key, val = splitCmds(s)
+			if cmd == "" {
 				fail(ErrEmpty)
 				continue
 			}
@@ -139,7 +138,8 @@ Loop:
 					Done:     respond,
 				}
 			}
-			switch args[0] {
+
+			switch cmd {
 			default:
 				fail(ErrUnknown)
 				continue
@@ -156,32 +156,32 @@ Loop:
 				}
 				buffering = false
 			case "DEL":
-				if argLen < 2 {
+				if key == "" {
 					fail(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
 					Type: DEL,
-					Key:  args[1],
+					Key:  key,
 				})
 			case "GET":
-				if argLen < 2 {
+				if key == "" {
 					fail(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
 					Type: GET,
-					Key:  args[1],
+					Key:  key,
 				})
 			case "SET":
-				if argLen < 3 {
+				if key == "" {
 					fail(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
 					Type:  SET,
-					Key:   args[1],
-					Value: strings.Join(args[2:], " "),
+					Key:   key,
+					Value: val,
 				})
 			case "QUIT":
 				wg.Wait()
@@ -242,4 +242,21 @@ func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	}
 	// Request more data.
 	return 0, nil, nil
+}
+
+// Adapted from the strings package function 'genSplit'.
+func splitCmds(s string) (cmd, key, val string) {
+	m := strings.IndexByte(s, ' ')
+	if m < 0 {
+		return s, key, val
+	}
+	cmd = s[:m]
+	s = s[m+1:]
+
+	m = strings.IndexByte(s, ' ')
+	if m < 0 {
+		return cmd, s, val
+	}
+
+	return cmd, s[:m], s[m+1:]
 }

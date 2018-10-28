@@ -10,6 +10,47 @@ import (
 	"testing"
 )
 
+func TestCmdSplit(t *testing.T) {
+	type testCase struct {
+		data     string
+		expected []string
+	}
+
+	tcs := []testCase{
+		testCase{
+			data:     "",
+			expected: []string{"", "", ""},
+		},
+		testCase{
+			data:     "GET",
+			expected: []string{"GET", "", ""},
+		},
+		testCase{
+			data:     "GET foo",
+			expected: []string{"GET", "foo", ""},
+		},
+		testCase{
+			data:     "SET foo bar",
+			expected: []string{"SET", "foo", "bar"},
+		},
+		testCase{
+			data:     "SET foo bar with spaces",
+			expected: []string{"SET", "foo", "bar with spaces"},
+		},
+	}
+
+	sample := make([]string, 3)
+	for _, tc := range tcs {
+		sample[0], sample[1], sample[2] = splitCmds(tc.data)
+
+		for i, expected := range tc.expected {
+			if expected != sample[i] {
+				t.Errorf("Expected '%s', received '%s'\n", expected, sample[i])
+			}
+		}
+	}
+}
+
 func TestClient(t *testing.T) {
 	var (
 		conn net.Conn
