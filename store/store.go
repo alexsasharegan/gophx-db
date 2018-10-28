@@ -12,9 +12,12 @@ import (
 	"sync"
 )
 
+// CommandType is an enum of allowed commands.
+type CommandType uint
+
 // Command codes
 const (
-	_ = iota
+	_ CommandType = iota
 	GET
 	SET
 	DEL
@@ -37,7 +40,7 @@ var (
 // Command is a uniform container for commands.
 type Command struct {
 	// Type is an integer representing GET, SET, or DEL
-	Type uint
+	Type CommandType
 	// Key is the key for the DB operation
 	Key string
 	// Value is the value to set going IN, and the result going OUT
@@ -90,9 +93,6 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		closed, buffering bool
 	)
 
-	scanner := bufio.NewScanner(conn)
-	scanner.Split(ScanCRLF)
-
 	send := func(s string) (int, error) {
 		return conn.Write(append([]byte(s), '\r', '\n'))
 	}
@@ -108,17 +108,18 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	}
 
 	tknc := make(chan string)
-
-	go func(sendc chan<- string) {
+	scanner := bufio.NewScanner(conn)
+	scanner.Split(ScanCRLF)
+	go func() {
 		for scanner.Scan() {
-			sendc <- scanner.Text()
+			tknc <- scanner.Text()
 		}
 
 		if err := scanner.Err(); err != nil && ctx.Err() != context.Canceled && !closed {
 			log.Println("Scan err:")
 			fmt.Println(err)
 		}
-	}(tknc)
+	}()
 
 Loop:
 	for {

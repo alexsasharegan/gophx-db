@@ -15,33 +15,33 @@ import (
 )
 
 func main() {
-	// Handy to kill the process when you let a go routine run wild...
-	// log.Println("PID:", os.Getpid())
-
 	srv, err := net.Listen("tcp", ":8888")
 	if err != nil {
 		log.Fatalln(fmt.Sprintf("Failed to listen on port 8888: %v", err))
 	}
 
-	var closing uint32
-
-	sig := make(chan os.Signal)
-	conns := make(chan net.Conn)
-	trans := store.NewTransChan()
+	sigc := make(chan os.Signal)
+	connc := make(chan net.Conn)
+	tx := store.NewTransChan()
 	ctx, cancel := context.WithCancel(context.Background())
 
+	var closing uint32
 	cleanup := func() {
-		log.Println("\nShutting down server.")
+		fmt.Println()
+		log.Println("Shutting down server.")
 
 		atomic.AddUint32(&closing, 1)
 		// trigger connections close
 		cancel()
-		// give it a sec...
+		// give connections a sec...
 		time.Sleep(time.Second)
-		srv.Close()
+		err := srv.Close()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	}
 
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	signal.Notify(sigc, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
 		for {
@@ -53,22 +53,22 @@ func main() {
 				log.Printf("Error accepting connection: %v (%T)\n", err, err)
 				continue
 			}
-			conns <- conn
+			connc <- conn
 		}
 	}()
 
-	go store.RunDB(ctx, trans)
+	go store.RunDB(ctx, tx)
 
 	log.Println("Listening: http://127.0.0.1:8888")
 
 	for {
 		select {
-		case conn := <-conns:
-			go store.ServeClient(ctx, conn, trans)
-		case <-sig:
+		case conn := <-connc:
+			go store.ServeClient(ctx, conn, tx)
+		case <-sigc:
 			cleanup()
 			// Call exit in case connections are still lingering,
-			// or the signal.Notify routine doesn't want to quit.
+			// or the signal.Notify routine doesn't exit.
 			os.Exit(0)
 		}
 	}
