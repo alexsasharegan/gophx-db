@@ -208,7 +208,70 @@ func setupParse() (net.Conn, chan Transaction, func()) {
 	}
 }
 
-func BenchmarkDB(b *testing.B) {
+func BenchmarkDBGet(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: GET, Key: "foo"},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBDel(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: DEL, Key: "foo"},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBSet(b *testing.B) {
+	tx, done := setupDB()
+	defer done()
+
+	var wg sync.WaitGroup
+	transaction := Transaction{
+		Commands: []Command{
+			Command{Type: SET, Key: "foo", Value: "bar"},
+		},
+		Done: func(cmds []Command) {
+			wg.Done()
+		},
+	}
+
+	for n := 0; n < b.N; n++ {
+		wg.Add(1)
+		tx <- transaction
+		wg.Wait()
+	}
+}
+
+func BenchmarkDBMulti(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
