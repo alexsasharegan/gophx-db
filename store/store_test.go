@@ -109,7 +109,7 @@ func BenchmarkDB(b *testing.B) {
 
 func scanConn(rx net.Conn, c chan string) {
 	scanner := bufio.NewScanner(rx)
-	scanner.Split(scanCRLF)
+	scanner.Split(ScanCRLF)
 
 	for scanner.Scan() {
 		c <- scanner.Text()

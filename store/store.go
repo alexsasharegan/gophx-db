@@ -91,7 +91,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	)
 
 	scanner := bufio.NewScanner(conn)
-	scanner.Split(scanCRLF)
+	scanner.Split(ScanCRLF)
 
 	send := func(s string) (int, error) {
 		return conn.Write(append([]byte(s), '\r', '\n'))
@@ -226,8 +226,8 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 	}
 }
 
-// Adapted from bufio/scan.go
-func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// ScanCRLF is adapted from bufio/scan.go
+func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
 	}
