@@ -114,6 +114,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	scanner.Split(ScanCRLF)
 	go func() {
 		for scanner.Scan() {
+			// 1 alloc: runtime.slicebytetostring
 			tknc <- scanner.Text()
 		}
 
