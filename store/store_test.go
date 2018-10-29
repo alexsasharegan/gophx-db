@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"testing"
 )
 
@@ -53,67 +52,34 @@ func TestCmdSplit(t *testing.T) {
 			t.Errorf("Expected %v, received %v\n", tc.cmd, cmd)
 		}
 		if !bytes.Equal(key, tc.key) {
-			t.Errorf("Expected %s, received %s\n", tc.key, key)
+			t.Errorf("Expected '%s', received '%s'\n", tc.key, key)
 		}
 		if !bytes.Equal(value, tc.value) {
-			t.Errorf("Expected %s, received %s\n", tc.value, value)
+			t.Errorf("Expected '%s', received '%s'\n", tc.value, value)
 		}
 	}
 }
 
 func TestClient(t *testing.T) {
-	var (
-		conn net.Conn
-		wg   sync.WaitGroup
-	)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	trans := NewTransactionQueue()
-	results := make(chan []byte, 16)
-
-	srv, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Error(err)
-	}
-	defer srv.Close()
-
-	wg.Add(1)
-	go func() {
-		conn, err = srv.Accept()
-		wg.Done()
-		if err != nil {
-			t.Error(err)
-		}
-	}()
-
-	client, err := net.Dial("tcp", srv.Addr().String())
-	if err != nil {
-		t.Error(err)
-	}
-	defer client.Close()
-
-	wg.Wait()
-	defer conn.Close()
-	go scanConn(client, results)
-	go RunDB(ctx, trans)
-	go ServeClient(ctx, conn, trans)
+	client, rx, done := setupClient(t)
+	defer done()
 
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, nil)
+	assertEQ(t, <-rx, nil)
 	client.Write([]byte("SET foo a value with spaces\r\n"))
-	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-rx, []byte("OK"))
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, []byte("a value with spaces"))
+	assertEQ(t, <-rx, []byte("a value with spaces"))
 	client.Write([]byte("DEL foo\r\n"))
-	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-rx, []byte("OK"))
 	client.Write([]byte("GET foo\r\n"))
-	assertEQ(t, <-results, nil)
+	assertEQ(t, <-rx, nil)
 
 	for i := 0; i < 1000; i++ {
 		client.Write([]byte(fmt.Sprintf("SET k-%d %d\r\n", i, i)))
-		assertEQ(t, <-results, []byte("OK"))
+		assertEQ(t, <-rx, []byte("OK"))
 		client.Write([]byte(fmt.Sprintf("GET k-%d\r\n", i)))
-		assertEQ(t, <-results, []byte(strconv.Itoa(i)))
+		assertEQ(t, <-rx, []byte(strconv.Itoa(i)))
 	}
 
 	client.Write([]byte("BEGIN\r\n"))
@@ -125,11 +91,29 @@ func TestClient(t *testing.T) {
 	client.Write([]byte("COMMIT\r\n"))
 	// Test that QUIT still flushes our transaction
 	client.Write([]byte("QUIT\r\n"))
-	assertEQ(t, <-results, nil)
-	assertEQ(t, <-results, []byte("OK"))
-	assertEQ(t, <-results, []byte("1"))
-	assertEQ(t, <-results, []byte("OK"))
-	assertEQ(t, <-results, nil)
+	assertEQ(t, <-rx, nil)
+	assertEQ(t, <-rx, []byte("OK"))
+	assertEQ(t, <-rx, []byte("1"))
+	assertEQ(t, <-rx, []byte("OK"))
+	assertEQ(t, <-rx, nil)
+}
+
+func setupClient(t *testing.T) (net.Conn, chan []byte, func()) {
+	var srv net.Conn
+	ctx, cancel := context.WithCancel(context.Background())
+	tx := NewTransactionQueue()
+	rx := make(chan []byte, 16)
+	client, srv := net.Pipe()
+
+	go scanConn(client, rx)
+	go RunDB(ctx, tx)
+	go ServeClient(ctx, srv, tx)
+
+	return client, rx, func() {
+		cancel()
+		client.Close()
+		srv.Close()
+	}
 }
 
 func TestParsing(t *testing.T) {
@@ -247,12 +231,12 @@ func BenchmarkDBGet(b *testing.B) {
 		Commands: []Command{
 			Command{Type: GET, Key: []byte("abcdefghijklmnopqrstuvwxyz")},
 		},
-		Result: make(chan []Command),
+		Rx: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
 		tx <- transaction
-		<-transaction.Result
+		<-transaction.Rx
 	}
 }
 
@@ -264,12 +248,12 @@ func BenchmarkDBDel(b *testing.B) {
 		Commands: []Command{
 			Command{Type: DEL, Key: []byte("abcdefghijklmnopqrstuvwxyz")},
 		},
-		Result: make(chan []Command),
+		Rx: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
 		tx <- transaction
-		<-transaction.Result
+		<-transaction.Rx
 	}
 }
 
@@ -281,12 +265,12 @@ func BenchmarkDBSet(b *testing.B) {
 		Commands: []Command{
 			Command{Type: SET, Key: []byte("abcdefghijklmnopqrstuvwxyz"), Value: []byte("0123456789")},
 		},
-		Result: make(chan []Command),
+		Rx: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
 		tx <- transaction
-		<-transaction.Result
+		<-transaction.Rx
 	}
 }
 
@@ -306,12 +290,12 @@ func BenchmarkDBMulti(b *testing.B) {
 			Command{Type: GET, Key: []byte("a")},
 			Command{Type: GET, Key: []byte("b")},
 		},
-		Result: make(chan []Command),
+		Rx: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
 		tx <- transaction
-		<-transaction.Result
+		<-transaction.Rx
 	}
 }
 

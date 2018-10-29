@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 )
@@ -61,7 +60,6 @@ func (ct CommandType) parse(b []byte) CommandType {
 		if bytes.Equal(b, []byte("QUIT")) {
 			return QUIT
 		}
-
 	case length == 3:
 		switch {
 		case bytes.Equal(b, []byte("GET")):
@@ -90,8 +88,8 @@ type Command struct {
 // needed for running commands and receiving their results.
 type Transaction struct {
 	Commands []Command
-	// Result is the channel by which the DB responds to commands
-	Result chan []Command
+	// Rx is the channel by which the DB responds to commands
+	Rx chan []Command
 }
 
 // KeyValue is a key-value store
@@ -133,79 +131,90 @@ func NewTransactionQueue() chan Transaction {
 // ServeClient listens for commands and responds with results.
 func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 	var (
-		t     Transaction
-		cmd   CommandType
-		count uint
-
+		// Our reusable var for buffering commands.
+		t Transaction
+		// The command parsed from a token emit.
+		cmd CommandType
+		// The count of transactions awaiting results.
+		tcount int
+		// Parsed key/value slices.
 		key, val []byte
-
-		closed, buffering bool
-
+		// A flag for ignoring scan errors
+		closed bool
+		// A flag for knowing when to append commands vs. flush a transaction.
+		buffering bool
 		// Start with a little room in the slice to minimize resize allocs.
-		cmds = make([]Command, 0, 8)
+		commands = make([]Command, 0, 8)
 		// Use a buffered channel to ensure the DB does not block on channel send.
-		results = make(chan []Command, 2)
+		rx = make(chan []Command, 2)
+		// Channel of tokens our scanner will emit from the connection.
+		tokenx = make(chan []byte)
 	)
 
 	defer conn.Close()
 
-	send := func(b []byte) (int, error) {
-		return conn.Write(append(b, '\r', '\n'))
-	}
-	fail := func(err error) {
+	// We handle failures in many places,
+	// so use a closure to ensure we set our buffering flag in response.
+	replyErr := func(err error) {
 		buffering = false
-		send([]byte(err.Error()))
+		conn.Write([]byte(err.Error() + "\r\n"))
 	}
 
-	tknc := make(chan []byte)
 	scanner := bufio.NewScanner(conn)
 	scanner.Split(ScanCRLF)
 	go func() {
 		for scanner.Scan() {
-			if tknc == nil {
+			// When we QUIT, we set the chan=nil to block.
+			if tokenx == nil {
 				return
 			}
-			tknc <- scanner.Bytes()
+			tokenx <- scanner.Bytes()
 		}
 
-		if err := scanner.Err(); err != nil && ctx.Err() != context.Canceled && !closed {
-			log.Println("Scan err:")
-			fmt.Println(err)
+		// Ignore errors when we've signaled the conn closed.
+		if err := scanner.Err(); err != nil && !closed {
+			log.Printf("Scan err:\n%v\n", err)
 		}
 	}()
 
 	for {
 		select {
+		// Handle graceful shutdown
 		case <-ctx.Done():
-			fail(ErrTerm)
+			replyErr(ErrTerm)
 			closed = true
 			return
-		case commands := <-results:
+
+		// Transaction results
+		case commands := <-rx:
 			for _, c := range commands {
 				if c.Value == nil && c.Type != GET {
-					send([]byte("OK"))
+					conn.Write([]byte("OK\r\n"))
 				} else {
-					send(c.Value)
+					conn.Write(append(c.Value, '\r', '\n'))
 				}
 			}
-			count--
+			tcount--
 			if closed {
 				return
 			}
-		case b := <-tknc:
+
+		// Client emits a token
+		case b := <-tokenx:
 			cmd, key, val = splitCmds(b)
 			if cmd == EMPTY {
-				fail(ErrEmpty)
+				replyErr(ErrEmpty)
 				continue
 			}
 			if cmd == ERR {
-				fail(ErrCmd)
+				replyErr(ErrCmd)
 				continue
 			}
 			if !buffering {
 				t = Transaction{
-					Commands: cmds[:0], // resuse the slice by zeroing it
-					Result:   results,
+					// Zero out the slice for reuse
+					Commands: commands[:0],
+					Rx:       rx,
 				}
 			}
 
@@ -214,17 +223,17 @@ func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 				buffering = true
 			case COMMIT:
 				if !buffering {
-					fail(ErrCmd)
+					replyErr(ErrCmd)
 					continue
 				}
 				if len(t.Commands) == 0 {
-					fail(ErrEmpty)
+					replyErr(ErrEmpty)
 					continue
 				}
 				buffering = false
 			case DEL:
 				if bytes.Equal(key, nil) {
-					fail(ErrArgs)
+					replyErr(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
@@ -233,7 +242,7 @@ func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 				})
 			case GET:
 				if bytes.Equal(key, nil) {
-					fail(ErrArgs)
+					replyErr(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
@@ -242,7 +251,7 @@ func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 				})
 			case SET:
 				if bytes.Equal(key, nil) {
-					fail(ErrArgs)
+					replyErr(ErrArgs)
 					continue
 				}
 				t.Commands = append(t.Commands, Command{
@@ -252,16 +261,16 @@ func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 				})
 			case QUIT:
 				// Make this channel block so we stop receiving further commands.
-				tknc = nil
+				tokenx = nil
 				closed = true
 				// If we aren't waiting on other results, exit.
-				if count == 0 {
+				if tcount == 0 {
 					return
 				}
 			}
 			// Perform a flush
 			if !buffering {
-				count++
+				tcount++
 				tx <- t
 			}
 		}
@@ -300,7 +309,7 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 				}
 				t.Commands[i] = cmd
 			}
-			t.Result <- t.Commands
+			t.Rx <- t.Commands
 		}
 	}
 }
