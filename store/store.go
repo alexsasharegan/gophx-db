@@ -282,7 +282,7 @@ Loop:
 func RunDB(ctx context.Context, trans <-chan Transaction) {
 	store := &KeyValue{
 		cache: make(map[uint64][]byte),
-		h:     fnv.New64(),
+		h:     fnv.New64a(),
 	}
 
 	for {
@@ -333,6 +333,10 @@ func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
 // Adapted from the strings package function 'genSplit'.
 func splitCmds(b []byte) (cmd CommandType, key, val []byte) {
+	if len(b) == 0 {
+		return EMPTY, key, val
+	}
+
 	m := bytes.IndexByte(b, ' ')
 	if m < 0 {
 		return cmd.parse(b), key, val
