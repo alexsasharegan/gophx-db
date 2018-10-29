@@ -22,6 +22,7 @@ func TestCmdSplit(t *testing.T) {
 		{nil, EMPTY, nil, nil},
 		{[]byte(""), EMPTY, nil, nil},
 		{[]byte("GET"), GET, nil, nil},
+		{[]byte("get foo"), ERR, []byte("foo"), nil},
 		{[]byte("DEL foo"), DEL, []byte("foo"), nil},
 		{[]byte("GET foo"), GET, []byte("foo"), nil},
 		{[]byte("SET foo bar"), SET, []byte("foo"), []byte("bar")},

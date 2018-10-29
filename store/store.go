@@ -56,17 +56,14 @@ func (ct CommandType) parse(b []byte) CommandType {
 		if bytes.Equal(b, []byte("BEGIN")) {
 			return BEGIN
 		}
-		return ERR
 	case length == 6:
 		if bytes.Equal(b, []byte("COMMIT")) {
 			return COMMIT
 		}
-		return ERR
 	case length == 4:
 		if bytes.Equal(b, []byte("QUIT")) {
 			return QUIT
 		}
-		return ERR
 
 	case length == 3:
 		switch {
