@@ -21,7 +21,7 @@ type testClient struct {
 }
 
 func main() {
-	numCPU := runtime.NumCPU()
+	numCPU := runtime.NumCPU() * 2
 	clients := make([]*testClient, numCPU)
 
 	var wg sync.WaitGroup
@@ -44,10 +44,9 @@ func main() {
 			go scanLines(tc.conn, tc.rchan)
 			var count int64
 
-			// 10 messages 10,000 times.
 			// Messages are sent and awaited like a client would do to a DB.
 			// Transactions are flushed, then each result is awaited.
-			for j := 0; j < 10000; j++ {
+			for j := 0; j < 5000; j++ {
 				tc.conn.Write([]byte(fmt.Sprintf("GET k%d\r\n", i)))
 				<-tc.rchan
 				count++

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"runtime"
 )
 
 // Command codes
@@ -30,7 +31,8 @@ const (
 
 var (
 	// CRLF Carriage Return Line Feed
-	CRLF = []byte{'\r', '\n'}
+	CRLF    = []byte{'\r', '\n'}
+	bufSize = runtime.NumCPU()
 )
 
 // Error types for parsing commands
@@ -125,7 +127,7 @@ func (kv *KeyValue) Del(k []byte) error {
 
 // NewTransactionQueue returns a buffered channel of Transaction
 func NewTransactionQueue() chan Transaction {
-	return make(chan Transaction, 512)
+	return make(chan Transaction, bufSize)
 }
 
 // ServeClient listens for commands and responds with results.
@@ -146,7 +148,7 @@ func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 		// Start with a little room in the slice to minimize resize allocs.
 		commands = make([]Command, 0, 8)
 		// Use a buffered channel to ensure the DB does not block on channel send.
-		rx = make(chan []Command, 2)
+		rx = make(chan []Command, bufSize)
 		// Channel of tokens our scanner will emit from the connection.
 		tokenx = make(chan []byte)
 	)
