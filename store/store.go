@@ -42,6 +42,7 @@ var (
 	ErrEmpty = errors.New("ErrEmpty Empty command")
 	ErrArgs  = errors.New("ErrArgs Command received with incorrect number of arguments")
 	ErrCmd   = errors.New("ErrCmd Invalid command received")
+	ErrTerm  = errors.New("ErrTerm Connection terminate by server")
 )
 
 // CommandType is an enum of allowed commands.
@@ -168,6 +169,8 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		results = make(chan []Command, 4)
 	)
 
+	defer conn.Close()
+
 	send := func(b []byte) (int, error) {
 		return conn.Write(append(b, '\r', '\n'))
 	}
@@ -181,6 +184,9 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	scanner.Split(ScanCRLF)
 	go func() {
 		for scanner.Scan() {
+			if tknc == nil {
+				return
+			}
 			tknc <- scanner.Bytes()
 		}
 
@@ -190,11 +196,11 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		}
 	}()
 
-Loop:
 	for {
 		select {
 		case <-ctx.Done():
-			break Loop
+			fail(ErrTerm)
+			return
 		case commands := <-results:
 			for _, c := range commands {
 				if c.Value == nil && c.Type != GET {
@@ -203,7 +209,9 @@ Loop:
 					send(c.Value)
 				}
 			}
-			wg.Done()
+			if closed {
+				return
+			}
 		case b := <-tknc:
 			cmd, key, val = splitCmds(b)
 			if cmd == EMPTY {
@@ -263,10 +271,9 @@ Loop:
 					Value: val,
 				})
 			case QUIT:
-				wg.Wait()
+				// Make this channel block so we stop receiving further commands.
+				tknc = nil
 				closed = true
-				conn.Close()
-				return
 			}
 			if !buffering {
 				wg.Add(1)
@@ -274,9 +281,6 @@ Loop:
 			}
 		}
 	}
-
-	closed = true
-	conn.Close()
 }
 
 // RunDB listens for transactions or a done signal from context.

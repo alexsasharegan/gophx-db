@@ -108,19 +108,6 @@ func TestClient(t *testing.T) {
 	client.Write([]byte("GET foo\r\n"))
 	assertEQ(t, <-results, nil)
 
-	client.Write([]byte("BEGIN\r\n"))
-	client.Write([]byte("GET test\r\n"))
-	client.Write([]byte("SET test 1\r\n"))
-	client.Write([]byte("GET test\r\n"))
-	client.Write([]byte("DEL test\r\n"))
-	client.Write([]byte("GET test\r\n"))
-	client.Write([]byte("COMMIT\r\n"))
-	assertEQ(t, <-results, nil)
-	assertEQ(t, <-results, []byte("OK"))
-	assertEQ(t, <-results, []byte("1"))
-	assertEQ(t, <-results, []byte("OK"))
-	assertEQ(t, <-results, nil)
-
 	for i := 0; i < 1000; i++ {
 		client.Write([]byte(fmt.Sprintf("SET k-%d %d\r\n", i, i)))
 		assertEQ(t, <-results, []byte("OK"))
@@ -128,7 +115,20 @@ func TestClient(t *testing.T) {
 		assertEQ(t, <-results, []byte(strconv.Itoa(i)))
 	}
 
+	client.Write([]byte("BEGIN\r\n"))
+	client.Write([]byte("GET test\r\n"))
+	client.Write([]byte("SET test 1\r\n"))
+	client.Write([]byte("GET test\r\n"))
+	client.Write([]byte("DEL test\r\n"))
+	client.Write([]byte("GET test\r\n"))
+	client.Write([]byte("COMMIT\r\n"))
+	// Test that QUIT still flushes our transaction
 	client.Write([]byte("QUIT\r\n"))
+	assertEQ(t, <-results, nil)
+	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-results, []byte("1"))
+	assertEQ(t, <-results, []byte("OK"))
+	assertEQ(t, <-results, nil)
 }
 
 func TestParsing(t *testing.T) {

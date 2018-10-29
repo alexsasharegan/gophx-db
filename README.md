@@ -8,13 +8,29 @@ The database core is implemented in a dedicated go routine with a buffered
 channel acting as the transaction queue. This means the data store is owned by a
 single go routine, and all operations are performed synchronously.
 
-The transaction queue pipes transactions, which are a list of commands. A
-command is one of GET, SET, or DEL, and the data structure contains its Type,
-Key, Value, and Result. These transactions use value semantics to avoid escape
-analysis as data is moved across go routines--this cuts down on the amount of
-allocations performed while dispatching transactions of commands.
+The transaction queue pipes transactions, which are a list of commands and a
+return channel, to the DB routine. A command is one of GET, SET, or DEL, and the
+data structure contains its Type, Key, and Value. These transactions use value
+semantics to avoid escape analysis as data is moved across go routines--this
+cuts down on the amount of allocations performed while dispatching transactions
+of commands.
 
-### Using `string`
+The idea is to create a unidirectional data flow between a connected client
+parsing and sending transactions to the DB, and the DB sending results back on
+the transaction's channel. Furthermore, whether sending a single command or
+multiple grouped in a transaction, they are all processed as if part of a
+transaction. Transactions are essentially first-class by always sending commands
+grouped in a slice.
+
+**NOTE:** I started out parsing tcp communications into strings, but found that
+I couldn't avoid an allocation in the `bufio.Scanner` call to `Text`. I switched
+to leveraging `[]byte` after finding that `scanner.Bytes()` does not trigger an
+allocation. I also started by communicating results from the DB back to the
+client connection go routine via a callback closure. I tested switching this to
+a channel, and was surprised to see a roughly 20% speed up in a long running
+benchmark test.
+
+### Benchmarks Using `string` Types
 
 ```txt
 goos: linux
@@ -27,8 +43,6 @@ BenchmarkDBGet-12       	 1000000	      1023 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       700 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 3000000	       534 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 2000000	       971 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 64.2% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	13.778s
 Success: Benchmarks passed.
 ```
@@ -44,8 +58,6 @@ BenchmarkDBGet-12       	 2000000	       707 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       611 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 3000000	       531 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 1000000	      1021 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 64.2% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	12.253s
 Success: Benchmarks passed.
 ```
@@ -61,13 +73,11 @@ BenchmarkDBGet-12       	 3000000	       657 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       517 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 2000000	       767 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 2000000	       756 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 64.2% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	14.955s
 Success: Benchmarks passed.
 ```
 
-### Zero Allocation Using `[]byte`
+### Benchmarks Using `[]byte` Types
 
 ```txt
 goos: linux
@@ -80,8 +90,6 @@ BenchmarkDBGet-12       	 3000000	       561 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       961 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 2000000	       544 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 2000000	       857 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 62.8% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	15.672s
 Success: Benchmarks passed.
 ```
@@ -97,8 +105,6 @@ BenchmarkDBGet-12       	 2000000	       782 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       992 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 2000000	       826 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 2000000	       892 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 62.8% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	16.359s
 Success: Benchmarks passed.
 ```
@@ -114,8 +120,6 @@ BenchmarkDBGet-12       	 2000000	       758 ns/op	       0 B/op	       0 allocs
 BenchmarkDBDel-12       	 2000000	       669 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBSet-12       	 3000000	       595 ns/op	       0 B/op	       0 allocs/op
 BenchmarkDBMulti-12     	 2000000	       876 ns/op	       0 B/op	       0 allocs/op
-PASS
-coverage: 62.8% of statements
 ok  	github.com/alexsasharegan/gophx-db/store	14.504s
 Success: Benchmarks passed.
 ```
