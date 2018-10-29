@@ -114,7 +114,7 @@ func (kv *KeyValue) Get(k []byte) []byte {
 // Set writes the value at the given key.
 func (kv *KeyValue) Set(k []byte, v []byte) error {
 	// The key slice escapes to the heap,
-	// but benchmarks show negligable perf penalty.
+	// but benchmarks show negligible perf penalty.
 	kv.cache[string(k)] = v
 	return nil
 }
