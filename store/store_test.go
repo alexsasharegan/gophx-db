@@ -14,27 +14,48 @@ import (
 
 func TestCmdSplit(t *testing.T) {
 	tt := []struct {
-		data     string
-		expected []string
+		data  []byte
+		cmd   CommandType
+		key   []byte
+		value []byte
 	}{
-		{"", []string{"", "", ""}},
-		{"GET", []string{"GET", "", ""}},
-		{"GET foo", []string{"GET", "foo", ""}},
-		{"SET foo bar", []string{"SET", "foo", "bar"}},
-		{"SET foo bar with spaces", []string{"SET", "foo", "bar with spaces"}},
-		{"any command here", []string{"any", "command", "here"}},
-		{" any command here", []string{"", "any", "command here"}},
-		{"  any command here", []string{"", "", "any command here"}},
-		{"   any command here", []string{"", "", " any command here"}},
+		{nil, EMPTY, nil, nil},
+		{[]byte(""), EMPTY, nil, nil},
+		{[]byte("GET"), GET, nil, nil},
+		{[]byte("DEL foo"), DEL, []byte("foo"), nil},
+		{[]byte("GET foo"), GET, []byte("foo"), nil},
+		{[]byte("SET foo bar"), SET, []byte("foo"), []byte("bar")},
+		{[]byte("SET foo bar with spaces"), SET, []byte("foo"), []byte("bar with spaces")},
+
+		{[]byte("BEGIN"), BEGIN, nil, nil},
+		{[]byte("begin"), ERR, nil, nil},
+		{[]byte("COMMIT"), COMMIT, nil, nil},
+		{[]byte("commit"), ERR, nil, nil},
+		{[]byte("QUIT"), QUIT, nil, nil},
+		{[]byte("quit"), ERR, nil, nil},
+
+		{[]byte("any command here"), ERR, []byte("command"), []byte("here")},
+		{[]byte(" any command here"), EMPTY, []byte("any"), []byte("command here")},
+		{[]byte("  any command here"), EMPTY, nil, []byte("any command here")},
+		{[]byte("   any command here"), EMPTY, nil, []byte(" any command here")},
 	}
 
-	sample := make([][]byte, 3)
+	var (
+		cmd CommandType
+
+		key, value []byte
+	)
+
 	for _, tc := range tt {
-		sample[0], sample[1], sample[2] = splitCmds([]byte(tc.data))
-		for i, expected := range tc.expected {
-			if expected != string(sample[i]) {
-				t.Errorf("Expected '%s', received '%s'\n", expected, sample[i])
-			}
+		cmd, key, value = splitCmds(tc.data)
+		if cmd != tc.cmd {
+			t.Errorf("Expected %v, received %v\n", tc.cmd, cmd)
+		}
+		if !bytes.Equal(key, tc.key) {
+			t.Errorf("Expected %s, received %s\n", tc.key, key)
+		}
+		if !bytes.Equal(value, tc.value) {
+			t.Errorf("Expected %s, received %s\n", tc.value, value)
 		}
 	}
 }
@@ -126,7 +147,7 @@ func TestParsing(t *testing.T) {
 	assertEQ(t, readConn(t, client), append([]byte(ErrEmpty.Error()), '\r', '\n'))
 
 	client.Write([]byte("notacommand\r\n"))
-	assertEQ(t, readConn(t, client), append([]byte(ErrUnknown.Error()), '\r', '\n'))
+	assertEQ(t, readConn(t, client), append([]byte(ErrCmd.Error()), '\r', '\n'))
 
 	client.Write([]byte("DEL\r\n"))
 	assertEQ(t, readConn(t, client), append([]byte(ErrArgs.Error()), '\r', '\n'))

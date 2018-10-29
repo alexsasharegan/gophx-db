@@ -13,15 +13,23 @@ import (
 	"sync"
 )
 
-// CommandType is an enum of allowed commands.
-type CommandType uint
-
 // Command codes
 const (
-	_ CommandType = iota
+	// Nothing received
+	EMPTY CommandType = iota
+
+	// DB operations
 	GET
 	SET
 	DEL
+
+	// Parsing directives
+	BEGIN
+	COMMIT
+	QUIT
+
+	// All other conditions
+	ERR
 )
 
 var (
@@ -31,12 +39,47 @@ var (
 
 // Error types for parsing commands
 var (
-	ErrEmpty   = errors.New("ErrEmpty Empty command")
-	ErrArgs    = errors.New("ErrArgs Command received with incorrect number of arguments")
-	ErrUnknown = errors.New("ErrUnknown Unknown command string received")
-	ErrCmd     = errors.New("ErrCmd Invalid command received")
-	ErrConTerm = errors.New("ErrConTerm Server is terminating the connection")
+	ErrEmpty = errors.New("ErrEmpty Empty command")
+	ErrArgs  = errors.New("ErrArgs Command received with incorrect number of arguments")
+	ErrCmd   = errors.New("ErrCmd Invalid command received")
 )
+
+// CommandType is an enum of allowed commands.
+type CommandType uint
+
+func (ct CommandType) parse(b []byte) CommandType {
+	switch length := len(b); {
+	case length == 0:
+		return EMPTY
+	case length == 5:
+		if bytes.Equal(b, []byte("BEGIN")) {
+			return BEGIN
+		}
+		return ERR
+	case length == 6:
+		if bytes.Equal(b, []byte("COMMIT")) {
+			return COMMIT
+		}
+		return ERR
+	case length == 4:
+		if bytes.Equal(b, []byte("QUIT")) {
+			return QUIT
+		}
+		return ERR
+
+	case length == 3:
+		switch {
+		case bytes.Equal(b, []byte("GET")):
+			return GET
+		case bytes.Equal(b, []byte("DEL")):
+			return DEL
+		case bytes.Equal(b, []byte("SET")):
+			return SET
+		}
+	}
+
+	return ERR
+}
 
 // Command is a uniform container for commands.
 type Command struct {
@@ -113,10 +156,11 @@ func NewTransactionQueue() chan Transaction {
 // ServeClient listens for commands and responds with results.
 func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	var (
-		t  Transaction
-		wg sync.WaitGroup
+		t   Transaction
+		wg  sync.WaitGroup
+		cmd CommandType
 
-		cmd, key, val     []byte
+		key, val          []byte
 		closed, buffering bool
 
 		cmds = make([]Command, 0, 8)
@@ -161,8 +205,12 @@ Loop:
 			break Loop
 		case b := <-tknc:
 			cmd, key, val = splitCmds(b)
-			if bytes.Equal(cmd, nil) {
+			if cmd == EMPTY {
 				fail(ErrEmpty)
+				continue
+			}
+			if cmd == ERR {
+				fail(ErrCmd)
 				continue
 			}
 			if !buffering {
@@ -172,13 +220,10 @@ Loop:
 				}
 			}
 
-			switch {
-			default:
-				fail(ErrUnknown)
-				continue
-			case bytes.Equal(cmd, []byte("BEGIN")):
+			switch cmd {
+			case BEGIN:
 				buffering = true
-			case bytes.Equal(cmd, []byte("COMMIT")):
+			case COMMIT:
 				if !buffering {
 					fail(ErrCmd)
 					continue
@@ -188,7 +233,7 @@ Loop:
 					continue
 				}
 				buffering = false
-			case bytes.Equal(cmd, []byte("DEL")):
+			case DEL:
 				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
@@ -197,7 +242,7 @@ Loop:
 					Type: DEL,
 					Key:  key,
 				})
-			case bytes.Equal(cmd, []byte("GET")):
+			case GET:
 				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
@@ -206,7 +251,7 @@ Loop:
 					Type: GET,
 					Key:  key,
 				})
-			case bytes.Equal(cmd, []byte("SET")):
+			case SET:
 				if bytes.Equal(key, nil) {
 					fail(ErrArgs)
 					continue
@@ -216,7 +261,7 @@ Loop:
 					Key:   key,
 					Value: val,
 				})
-			case bytes.Equal(cmd, []byte("QUIT")):
+			case QUIT:
 				wg.Wait()
 				closed = true
 				conn.Close()
@@ -287,12 +332,12 @@ func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 // Adapted from the strings package function 'genSplit'.
-func splitCmds(b []byte) (cmd, key, val []byte) {
+func splitCmds(b []byte) (cmd CommandType, key, val []byte) {
 	m := bytes.IndexByte(b, ' ')
 	if m < 0 {
-		return b, key, val
+		return cmd.parse(b), key, val
 	}
-	cmd = b[:m]
+	cmd = cmd.parse(b[:m])
 	b = b[m+1:]
 
 	m = bytes.IndexByte(b, ' ')
