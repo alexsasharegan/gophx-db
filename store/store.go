@@ -91,13 +91,12 @@ type Command struct {
 	Value []byte
 }
 
-// DoneFunc is a callback for the command set with results applied.
-type DoneFunc func(commands []Command)
-
-// Transaction contains the CommandSet and a DoneFunc needed for running commands.
+// Transaction contains the CommandSet and a Result channel
+// needed for running commands and receiving their results.
 type Transaction struct {
 	Commands []Command
-	Done     DoneFunc
+	// Result is the channel by which the DB responds to commands
+	Result chan []Command
 }
 
 // KeyValue is a key-value store
@@ -163,7 +162,10 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		key, val          []byte
 		closed, buffering bool
 
+		// Start with a small, but decently sized slice to minimize resize allocs.
 		cmds = make([]Command, 0, 8)
+		// Use a buffered channel to ensure the DB does not block on channel send.
+		results = make(chan []Command, 4)
 	)
 
 	send := func(b []byte) (int, error) {
@@ -172,16 +174,6 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 	fail := func(err error) {
 		buffering = false
 		send([]byte(err.Error()))
-	}
-	respond := func(commands []Command) {
-		for _, c := range commands {
-			if c.Value == nil && c.Type != GET {
-				send([]byte("OK"))
-			} else {
-				send(c.Value)
-			}
-		}
-		wg.Done()
 	}
 
 	tknc := make(chan []byte)
@@ -203,6 +195,15 @@ Loop:
 		select {
 		case <-ctx.Done():
 			break Loop
+		case commands := <-results:
+			for _, c := range commands {
+				if c.Value == nil && c.Type != GET {
+					send([]byte("OK"))
+				} else {
+					send(c.Value)
+				}
+			}
+			wg.Done()
 		case b := <-tknc:
 			cmd, key, val = splitCmds(b)
 			if cmd == EMPTY {
@@ -215,8 +216,8 @@ Loop:
 			}
 			if !buffering {
 				t = Transaction{
-					Commands: cmds[:0],
-					Done:     respond,
+					Commands: cmds[:0], // resuse the slice by zeroing it
+					Result:   results,
 				}
 			}
 
@@ -309,7 +310,7 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 				}
 				t.Commands[i] = cmd
 			}
-			t.Done(t.Commands)
+			t.Result <- t.Commands
 		}
 	}
 }
@@ -334,7 +335,7 @@ func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 // Adapted from the strings package function 'genSplit'.
 func splitCmds(b []byte) (cmd CommandType, key, val []byte) {
 	if len(b) == 0 {
-		return EMPTY, key, val
+		return
 	}
 
 	m := bytes.IndexByte(b, ' ')

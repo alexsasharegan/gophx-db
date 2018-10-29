@@ -242,20 +242,16 @@ func BenchmarkDBGet(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
-	var wg sync.WaitGroup
 	transaction := Transaction{
 		Commands: []Command{
 			Command{Type: GET, Key: []byte("foo")},
 		},
-		Done: func(cmds []Command) {
-			wg.Done()
-		},
+		Result: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
-		wg.Add(1)
 		tx <- transaction
-		wg.Wait()
+		<-transaction.Result
 	}
 }
 
@@ -263,20 +259,16 @@ func BenchmarkDBDel(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
-	var wg sync.WaitGroup
 	transaction := Transaction{
 		Commands: []Command{
 			Command{Type: DEL, Key: []byte("foo")},
 		},
-		Done: func(cmds []Command) {
-			wg.Done()
-		},
+		Result: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
-		wg.Add(1)
 		tx <- transaction
-		wg.Wait()
+		<-transaction.Result
 	}
 }
 
@@ -284,20 +276,16 @@ func BenchmarkDBSet(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
-	var wg sync.WaitGroup
 	transaction := Transaction{
 		Commands: []Command{
 			Command{Type: SET, Key: []byte("foo"), Value: []byte("bar")},
 		},
-		Done: func(cmds []Command) {
-			wg.Done()
-		},
+		Result: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
-		wg.Add(1)
 		tx <- transaction
-		wg.Wait()
+		<-transaction.Result
 	}
 }
 
@@ -305,7 +293,6 @@ func BenchmarkDBMulti(b *testing.B) {
 	tx, done := setupDB()
 	defer done()
 
-	var wg sync.WaitGroup
 	transaction := Transaction{
 		Commands: []Command{
 			Command{Type: GET, Key: []byte("foo")},
@@ -318,16 +305,12 @@ func BenchmarkDBMulti(b *testing.B) {
 			Command{Type: GET, Key: []byte("a")},
 			Command{Type: GET, Key: []byte("b")},
 		},
-		Done: func(cmds []Command) {
-			wg.Done()
-		},
+		Result: make(chan []Command),
 	}
 
 	for n := 0; n < b.N; n++ {
-		// WaitGroup here to ensure the result is fully processed
-		wg.Add(1)
 		tx <- transaction
-		wg.Wait()
+		<-transaction.Result
 	}
 }
 
