@@ -245,7 +245,7 @@ func BenchmarkDBGet(b *testing.B) {
 
 	transaction := Transaction{
 		Commands: []Command{
-			Command{Type: GET, Key: []byte("foo")},
+			Command{Type: GET, Key: []byte("abcdefghijklmnopqrstuvwxyz")},
 		},
 		Result: make(chan []Command),
 	}
@@ -262,7 +262,7 @@ func BenchmarkDBDel(b *testing.B) {
 
 	transaction := Transaction{
 		Commands: []Command{
-			Command{Type: DEL, Key: []byte("foo")},
+			Command{Type: DEL, Key: []byte("abcdefghijklmnopqrstuvwxyz")},
 		},
 		Result: make(chan []Command),
 	}
@@ -279,7 +279,7 @@ func BenchmarkDBSet(b *testing.B) {
 
 	transaction := Transaction{
 		Commands: []Command{
-			Command{Type: SET, Key: []byte("foo"), Value: []byte("bar")},
+			Command{Type: SET, Key: []byte("abcdefghijklmnopqrstuvwxyz"), Value: []byte("0123456789")},
 		},
 		Result: make(chan []Command),
 	}

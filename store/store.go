@@ -6,11 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash"
-	"hash/fnv"
 	"log"
 	"net"
-	"sync"
 )
 
 // Command codes
@@ -99,49 +96,32 @@ type Transaction struct {
 
 // KeyValue is a key-value store
 type KeyValue struct {
-	cache map[uint64][]byte
-	h     hash.Hash64
+	cache map[string][]byte
 }
 
-func (kv *KeyValue) hash(b []byte) (uint64, error) {
-	kv.h.Reset()
-	_, err := kv.h.Write(b)
-	if err != nil {
-		return 0, err
+// NewKeyValue initializes a KeyValue store.
+func NewKeyValue() *KeyValue {
+	return &KeyValue{
+		cache: make(map[string][]byte),
 	}
-
-	return kv.h.Sum64(), nil
 }
 
 // Get returns the string at the given key, or an empty string.
 func (kv *KeyValue) Get(k []byte) []byte {
-	key, err := kv.hash(k)
-	if err != nil {
-		return nil
-	}
-
-	return kv.cache[key]
+	return kv.cache[string(k)]
 }
 
 // Set writes the value at the given key.
 func (kv *KeyValue) Set(k []byte, v []byte) error {
-	key, err := kv.hash(k)
-	if err != nil {
-		return err
-	}
-
-	kv.cache[key] = v
+	// The key slice escapes to the heap,
+	// but benchmarks show negligable perf penalty.
+	kv.cache[string(k)] = v
 	return nil
 }
 
 // Del deletes the given key from the store.
 func (kv *KeyValue) Del(k []byte) error {
-	key, err := kv.hash(k)
-	if err != nil {
-		return err
-	}
-
-	delete(kv.cache, key)
+	delete(kv.cache, string(k))
 	return nil
 }
 
@@ -151,19 +131,20 @@ func NewTransactionQueue() chan Transaction {
 }
 
 // ServeClient listens for commands and responds with results.
-func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
+func ServeClient(ctx context.Context, conn net.Conn, tx chan<- Transaction) {
 	var (
-		t   Transaction
-		wg  sync.WaitGroup
-		cmd CommandType
+		t     Transaction
+		cmd   CommandType
+		count uint
 
-		key, val          []byte
+		key, val []byte
+
 		closed, buffering bool
 
-		// Start with a small, but decently sized slice to minimize resize allocs.
+		// Start with a little room in the slice to minimize resize allocs.
 		cmds = make([]Command, 0, 8)
 		// Use a buffered channel to ensure the DB does not block on channel send.
-		results = make(chan []Command, 4)
+		results = make(chan []Command, 2)
 	)
 
 	defer conn.Close()
@@ -197,6 +178,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 		select {
 		case <-ctx.Done():
 			fail(ErrTerm)
+			closed = true
 			return
 		case commands := <-results:
 			for _, c := range commands {
@@ -206,6 +188,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 					send(c.Value)
 				}
 			}
+			count--
 			if closed {
 				return
 			}
@@ -271,10 +254,15 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 				// Make this channel block so we stop receiving further commands.
 				tknc = nil
 				closed = true
+				// If we aren't waiting on other results, exit.
+				if count == 0 {
+					return
+				}
 			}
+			// Perform a flush
 			if !buffering {
-				wg.Add(1)
-				trans <- t
+				count++
+				tx <- t
 			}
 		}
 	}
@@ -282,10 +270,7 @@ func ServeClient(ctx context.Context, conn net.Conn, trans chan<- Transaction) {
 
 // RunDB listens for transactions or a done signal from context.
 func RunDB(ctx context.Context, trans <-chan Transaction) {
-	store := &KeyValue{
-		cache: make(map[uint64][]byte),
-		h:     fnv.New64a(),
-	}
+	store := NewKeyValue()
 
 	for {
 		select {
@@ -298,12 +283,16 @@ func RunDB(ctx context.Context, trans <-chan Transaction) {
 					cmd.Value = store.Get(cmd.Key)
 				case SET:
 					if err := store.Set(cmd.Key, cmd.Value); err != nil {
+						// This escapes to the heap,
+						// but we only care about the success path.
 						cmd.Value = []byte(err.Error())
 					} else {
 						cmd.Value = nil
 					}
 				case DEL:
 					if err := store.Del(cmd.Key); err != nil {
+						// This escapes to the heap,
+						// but we only care about the success path.
 						cmd.Value = []byte(err.Error())
 					} else {
 						cmd.Value = nil
