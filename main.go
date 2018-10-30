@@ -1,134 +1,122 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"log"
-	"net"
-	"strings"
 	"sync"
+
+	"github.com/tidwall/evio"
 )
 
-type command [3]string
-type transaction struct {
-	commands []command
-}
-
 type database struct {
-	data map[string]string
+	data map[string][]byte
 	mu   sync.RWMutex
 }
 
-func (db *database) get(k string) string {
+func (db *database) get(k string) []byte {
 	return db.data[k]
 }
 
-func (db *database) set(k, v string) string {
+func (db *database) set(k string, v []byte) []byte {
 	db.data[k] = v
-	return "OK"
+	return []byte("OK")
 }
 
-func (db *database) del(k string) string {
+func (db *database) del(k string) []byte {
 	delete(db.data, k)
-	return "OK"
+	return []byte("OK")
 }
 
-func (db *database) process(c command) string {
-	var s string
-	switch c[0] {
-	case "GET":
+func (db *database) process(c command) []byte {
+	var b []byte
+	switch {
+	case bytes.Equal(c[0], []byte("GET")):
 		db.mu.RLock()
-		s = db.get(c[1])
+		b = db.get(string(c[1]))
 		db.mu.RUnlock()
-	case "DEL":
+	case bytes.Equal(c[0], []byte("DEL")):
 		db.mu.Lock()
-		s = db.del(c[1])
+		b = db.del(string(c[1]))
 		db.mu.Unlock()
-	case "SET":
+	case bytes.Equal(c[0], []byte("SET")):
 		db.mu.Lock()
-		s = db.set(c[1], c[2])
+		b = db.set(string(c[1]), c[2])
 		db.mu.Unlock()
 	}
-	return s
+	return b
 }
 
+type command [3][]byte
+
+type client struct {
+	inTransaction bool
+	transaction   []command
+}
+
+var (
+	db     = &database{data: make(map[string][]byte)}
+	m      = make(map[evio.Conn]*client)
+	cmd    command
+	events evio.Events
+	buf    bytes.Buffer
+)
+
 func main() {
-	srv, err := net.Listen("tcp", ":8888")
+	events.Opened = openConnection
+	events.Data = onData
+
+	err := evio.Serve(events, "tcp://0.0.0.0:8888")
 	if err != nil {
 		log.Fatalln(fmt.Sprintf("Failed to listen on port 8888: %v", err))
 	}
-
-	db := &database{data: make(map[string]string)}
-
-	for {
-		conn, err := srv.Accept()
-		if err != nil {
-			log.Printf("Error accepting connection: %v (%T)\n", err, err)
-			return
-		}
-		go serveClient(conn, db)
-	}
 }
 
-func serveClient(conn net.Conn, db *database) {
-	defer conn.Close()
-	tokenx := make(chan command)
-	go scan(conn, tokenx)
+func openConnection(conn evio.Conn) (b []byte, opts evio.Options, action evio.Action) {
+	m[conn] = new(client)
+	return
+}
 
-	var inTransaction bool
-	transaction := new(transaction)
-	for {
-		c := <-tokenx
+func onData(conn evio.Conn, in []byte) ([]byte, evio.Action) {
+	var action evio.Action
+	client := m[conn]
+	lines := bytes.Split(in, []byte{'\r', '\n'})
+	buf.Reset()
 
-		if c[0] == "BEGIN" {
-			transaction.commands = transaction.commands[:0]
-			inTransaction = true
+	for i := 0; i < len(lines); i++ {
+		if len(lines[i]) == 0 {
 			continue
 		}
 
-		if c[0] == "COMMIT" {
-			inTransaction = false
-			for _, c := range transaction.commands {
-				conn.Write([]byte(db.process(c) + "\r\n"))
+		split := bytes.SplitN(lines[i], []byte{' '}, 3)
+		for j := 0; j < len(split); j++ {
+			cmd[j] = split[j]
+		}
+
+		switch {
+		case bytes.Equal(cmd[0], []byte("QUIT")):
+			delete(m, conn)
+			action = evio.Close
+
+		case bytes.Equal(cmd[0], []byte("BEGIN")):
+			client.inTransaction = true
+
+		case bytes.Equal(cmd[0], []byte("COMMIT")):
+			for _, c := range client.transaction {
+				buf.Write(db.process(c))
+				buf.Write([]byte{'\r', '\n'})
 			}
-			continue
+			client.inTransaction = false
+			client.transaction = client.transaction[:0]
+
+		case client.inTransaction:
+			client.transaction = append(client.transaction, cmd)
+
+		default:
+			buf.Write(db.process(cmd))
+			buf.Write([]byte{'\r', '\n'})
 		}
+	}
 
-		if inTransaction {
-			transaction.commands = append(transaction.commands, c)
-		} else {
-			conn.Write([]byte(db.process(c) + "\r\n"))
-		}
-	}
-}
-
-func scan(conn net.Conn, tokenx chan<- command) {
-	scanner := bufio.NewScanner(conn)
-	scanner.Split(ScanCRLF)
-
-	for scanner.Scan() {
-		var c command
-		for i, s := range strings.SplitN(scanner.Text(), " ", 3) {
-			c[i] = s
-		}
-		tokenx <- c
-	}
-}
-
-// ScanCRLF is adapted from bufio/scan.go
-func ScanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-	if i := bytes.Index(data, []byte{'\r', '\n'}); i >= 0 {
-		// We have a full newline-terminated line.
-		return i + 2, data[0:i], nil
-	}
-	// If we're at EOF, we have a final, non-terminated line. Return it.
-	if atEOF {
-		return len(data), data, nil
-	}
-	// Request more data.
-	return 0, nil, nil
+	return buf.Bytes(), action
 }
