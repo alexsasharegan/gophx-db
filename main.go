@@ -4,85 +4,71 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/tidwall/evio"
 )
 
+// declaring these globally avoids alloc 🤷
+var (
+	ok       = []byte("OK")
+	errReply = []byte("Err Unknown command")
+)
+
 type database struct {
 	data map[string][]byte
-	mu   sync.RWMutex
-}
-
-func (db *database) get(k string) []byte {
-	return db.data[k]
-}
-
-func (db *database) set(k string, v []byte) []byte {
-	db.data[k] = v
-	return []byte("OK")
-}
-
-func (db *database) del(k string) []byte {
-	delete(db.data, k)
-	return []byte("OK")
 }
 
 func (db *database) process(c command) []byte {
-	var b []byte
 	switch {
 	case bytes.Equal(c[0], []byte("GET")):
-		db.mu.RLock()
-		b = db.get(string(c[1]))
-		db.mu.RUnlock()
+		return db.data[string(c[1])]
 	case bytes.Equal(c[0], []byte("DEL")):
-		db.mu.Lock()
-		b = db.del(string(c[1]))
-		db.mu.Unlock()
+		delete(db.data, string(c[1]))
+		return ok
 	case bytes.Equal(c[0], []byte("SET")):
-		db.mu.Lock()
-		b = db.set(string(c[1]), c[2])
-		db.mu.Unlock()
+		db.data[string(c[1])] = c[2]
+		return ok
 	}
-	return b
+
+	return errReply
 }
 
 type command [3][]byte
 
-type client struct {
+type clientContext struct {
 	inTransaction bool
 	transaction   []command
 }
 
 var (
-	db     = &database{data: make(map[string][]byte)}
-	m      = make(map[evio.Conn]*client)
-	cmd    command
-	events evio.Events
-	buf    bytes.Buffer
+	db  = new(database)
+	buf = new(bytes.Buffer)
+	cmd command
 )
 
 func main() {
-	events.Opened = openConnection
-	events.Data = onData
-
-	err := evio.Serve(events, "tcp://0.0.0.0:8888")
+	db.data = make(map[string][]byte)
+	err := evio.Serve(evio.Events{
+		Opened: handleOpen,
+		Data:   handleData,
+	}, "tcp://0.0.0.0:8888")
 	if err != nil {
-		log.Fatalln(fmt.Sprintf("Failed to listen on port 8888: %v", err))
+		log.Fatalln(fmt.Sprintf("Serve failed on port 8888: %v", err))
 	}
 }
 
-func openConnection(conn evio.Conn) (b []byte, opts evio.Options, action evio.Action) {
-	m[conn] = new(client)
+func handleOpen(conn evio.Conn) (b []byte, opts evio.Options, action evio.Action) {
+	conn.SetContext(new(clientContext))
 	return
 }
 
-func onData(conn evio.Conn, in []byte) ([]byte, evio.Action) {
+func handleData(conn evio.Conn, in []byte) ([]byte, evio.Action) {
 	var action evio.Action
-	client := m[conn]
+	client := conn.Context().(*clientContext)
 	lines := bytes.Split(in, []byte{'\r', '\n'})
 	buf.Reset()
 
+ProcessLines:
 	for i := 0; i < len(lines); i++ {
 		if len(lines[i]) == 0 {
 			continue
@@ -95,8 +81,8 @@ func onData(conn evio.Conn, in []byte) ([]byte, evio.Action) {
 
 		switch {
 		case bytes.Equal(cmd[0], []byte("QUIT")):
-			delete(m, conn)
 			action = evio.Close
+			break ProcessLines
 
 		case bytes.Equal(cmd[0], []byte("BEGIN")):
 			client.inTransaction = true
