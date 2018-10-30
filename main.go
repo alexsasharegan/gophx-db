@@ -21,7 +21,6 @@ func main() {
 	}
 
 	sigc := make(chan os.Signal)
-	connc := make(chan net.Conn)
 	tx := store.NewTransactionQueue()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -53,7 +52,7 @@ func main() {
 				log.Printf("Error accepting connection: %v (%T)\n", err, err)
 				continue
 			}
-			connc <- conn
+			go store.ServeClient(ctx, conn, tx)
 		}
 	}()
 
@@ -61,15 +60,6 @@ func main() {
 
 	log.Println("Listening: http://127.0.0.1:8888")
 
-	for {
-		select {
-		case conn := <-connc:
-			go store.ServeClient(ctx, conn, tx)
-		case <-sigc:
-			cleanup()
-			// Call exit in case connections are still lingering,
-			// or the signal.Notify routine doesn't exit.
-			os.Exit(0)
-		}
-	}
+	<-sigc
+	cleanup()
 }
