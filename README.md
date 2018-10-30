@@ -2,129 +2,44 @@
 
 Submission for the October 2018 Golang Phoenix database challenge.
 
-## Architecture
+## Branches
 
-The database core is implemented in a dedicated go routine with a buffered
-channel acting as the transaction queue. This means the data store is owned by a
-single go routine, and all operations are performed synchronously.
+Performance benchmarks done with
+[github.com/alexsasharegan/gophx-db-test](https://github.com/alexsasharegan/gophx-db-test).
 
-The transaction queue pipes transactions, which are a list of commands and a
-return channel, to the DB routine. A command is one of GET, SET, or DEL, and the
-data structure contains its Type, Key, and Value. These transactions use value
-semantics to avoid escape analysis as data is moved across go routines--this
-cuts down on the amount of allocations performed while dispatching transactions
-of commands.
+Benchmark Settings:
 
-The idea is to create a unidirectional data flow between a connected client
-parsing and sending transactions to the DB, and the DB sending results back on
-the transaction's channel. Furthermore, whether sending a single command or
-multiple grouped in a transaction, they are all processed as if part of a
-transaction. Transactions are essentially first-class by always sending commands
-grouped in a slice.
+- `-bench`
+- `-procs=12` _(I have a 6 core duo machine)_
+- `-time=60`
 
-**NOTE:** I started out parsing tcp communications into strings, but found that
-I couldn't avoid an allocation in the `bufio.Scanner` call to `Text`. I switched
-to leveraging `[]byte` after finding that `scanner.Bytes()` does not trigger an
-allocation. I also started by communicating results from the DB back to the
-client connection go routine via a callback closure. I tested switching this to
-a channel, and was surprised to see a roughly 20% speed up in a long running
-benchmark test.
-
-### Benchmarks Using `string` Types
+### `mutex`
 
 ```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      2037 ns/op	       8 B/op	       1 allocs/op
-BenchmarkParseSet-12    	 1000000	      2083 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParseDel-12    	  500000	      2676 ns/op	       8 B/op	       1 allocs/op
-BenchmarkDBGet-12       	 1000000	      1023 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       700 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 3000000	       534 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 2000000	       971 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	13.778s
-Success: Benchmarks passed.
+✅ All tests passed
+    Clients    Duration    Messages Sent & Received    Messages/Second
+         12        1m0s                  16,086,403            268,106
 ```
+
+### `channels`
 
 ```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      1721 ns/op	       8 B/op	       1 allocs/op
-BenchmarkParseSet-12    	 1000000	      2199 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParseDel-12    	  500000	      2232 ns/op	       8 B/op	       1 allocs/op
-BenchmarkDBGet-12       	 2000000	       707 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       611 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 3000000	       531 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 1000000	      1021 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	12.253s
-Success: Benchmarks passed.
+✅ All tests passed
+    Clients    Duration    Messages Sent & Received    Messages/Second
+         12        1m0s                  12,854,464            214,241
 ```
+
+### `evio`
 
 ```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      2185 ns/op	       8 B/op	       1 allocs/op
-BenchmarkParseSet-12    	 1000000	      1859 ns/op	      32 B/op	       1 allocs/op
-BenchmarkParseDel-12    	 1000000	      1592 ns/op	       8 B/op	       1 allocs/op
-BenchmarkDBGet-12       	 3000000	       657 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       517 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 2000000	       767 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 2000000	       756 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	14.955s
-Success: Benchmarks passed.
+✅ All tests passed
+    Clients    Duration    Messages Sent & Received    Messages/Second
+         12        1m0s                  11,560,414            192,673
 ```
 
-### Benchmarks Using `[]byte` Types
+## Golang Phoenix Requirements
 
-```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      1904 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseSet-12    	 1000000	      1859 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseDel-12    	 1000000	      2461 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBGet-12       	 3000000	       561 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       961 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 2000000	       544 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 2000000	       857 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	15.672s
-Success: Benchmarks passed.
-```
-
-```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      1806 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseSet-12    	 1000000	      2202 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseDel-12    	 1000000	      2330 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBGet-12       	 2000000	       782 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       992 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 2000000	       826 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 2000000	       892 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	16.359s
-Success: Benchmarks passed.
-```
-
-```txt
-goos: linux
-goarch: amd64
-pkg: github.com/alexsasharegan/gophx-db/store
-BenchmarkParseGet-12    	 1000000	      1698 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseSet-12    	 1000000	      2353 ns/op	       0 B/op	       0 allocs/op
-BenchmarkParseDel-12    	  500000	      2262 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBGet-12       	 2000000	       758 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBDel-12       	 2000000	       669 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBSet-12       	 3000000	       595 ns/op	       0 B/op	       0 allocs/op
-BenchmarkDBMulti-12     	 2000000	       876 ns/op	       0 B/op	       0 allocs/op
-ok  	github.com/alexsasharegan/gophx-db/store	14.504s
-Success: Benchmarks passed.
-```
-
-## Details
+### Details
 
 Hey everyone! Super excited for this meetup. For October, we'll be building a
 key/value database server. This is an adaptation from an interview challenge
@@ -137,7 +52,7 @@ our implementations and running some benchmarks.
 
 You're free to use whatever tools are available to build this.
 
-## Requirements
+### Requirements
 
 1. Listen on port `8888`
 1. Handle the following commands: `GET`, `SET`, `DEL`, `QUIT`, `BEGIN`,
@@ -163,9 +78,9 @@ Transactional Command Specifications:
 1. `COMMIT` - COMMIT indicates that the transaction is complete and to finalize
    the transaction by committing any changes to the global data store.
 
-## Examples
+### Examples
 
-### Regular interaction with the server
+#### Regular interaction with the server
 
 ```text
 SET key1 value1\r\n
@@ -178,7 +93,7 @@ In the example above, the expectation is that if "key1" doesn't exist, it is
 created and the "value1" is assigned to it. If it already exists, "key1" is
 updated with the new value.
 
-### Transactional interaction with the server
+#### Transactional interaction with the server
 
 ```text
 BEGIN\r\n
