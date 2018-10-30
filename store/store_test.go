@@ -217,7 +217,6 @@ func setupParse() (net.Conn, chan Transaction, func()) {
 
 	return client, tx, func() {
 		cancel()
-		close(tx)
 		client.Close()
 		server.Close()
 	}
