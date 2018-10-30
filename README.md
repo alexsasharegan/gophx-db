@@ -15,6 +15,9 @@ Benchmark Settings:
 
 ### `mutex`
 
+Inspired from
+[Chenxi Cai's _(@cchx0000)_](https://github.com/cchx0000/meetupphx) submission.
+
 ```txt
 ✅ All tests passed
     Clients    Duration    Messages Sent & Received    Messages/Second
@@ -23,6 +26,8 @@ Benchmark Settings:
 
 ### `channels`
 
+My own, original implementation.
+
 ```txt
 ✅ All tests passed
     Clients    Duration    Messages Sent & Received    Messages/Second
@@ -30,6 +35,9 @@ Benchmark Settings:
 ```
 
 ### `evio`
+
+My favorite implementation using
+[Josh Baker's evio library](https://github.com/tidwall/evio).
 
 ```txt
 ✅ All tests passed
