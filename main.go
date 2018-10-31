@@ -81,6 +81,10 @@ func serveClient(conn net.Conn, db *database) {
 	for {
 		c := <-tokenx
 
+		if c[0] == "QUIT" {
+			return
+		}
+
 		if c[0] == "BEGIN" {
 			transaction.commands = transaction.commands[:0]
 			inTransaction = true
